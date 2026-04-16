@@ -1,0 +1,33 @@
+name: Dagelijkse TV-recensies
+
+on:
+  schedule:
+    # Elke ochtend om 07:00 Nederlandse tijd (= 05:00 UTC in de winter, 06:00 UTC zomer)
+    # Pas aan naar eigen voorkeur. UTC gebruiken; NL is UTC+1 (winter) of UTC+2 (zomer).
+    - cron: "0 6 * * *"   # 08:00 NL zomertijd — pas aan naar wens
+
+  # Handig: ook handmatig starten via GitHub UI om te testen
+  workflow_dispatch:
+
+jobs:
+  stuur-recensies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository ophalen
+        uses: actions/checkout@v4
+
+      - name: Python instellen
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Afhankelijkheden installeren
+        run: pip install requests beautifulsoup4
+
+      - name: TV-recensie script uitvoeren
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          MAIL_TO:        ${{ secrets.MAIL_TO }}
+          MAIL_FROM:      ${{ secrets.MAIL_FROM }}
+        run: python tv_recensies.py
