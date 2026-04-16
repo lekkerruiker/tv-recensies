@@ -5,9 +5,13 @@ import os
 import sys
 from datetime import datetime
 
+# 1. Instellingen
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "onboarding@resend.dev")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+
+if not API_KEY or not EMAIL_RECEIVER:
+    sys.exit(1)
 
 resend.api_key = API_KEY
 
@@ -21,45 +25,65 @@ FEEDS = {
 
 def get_reviews():
     results = []
-    feed_samples = ""
+    # De filters die we gebruiken
     KEYWORDS = ['lips', 'zap', 'bos', 'peereboom', 'marcel', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-']
-    
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
-            soup = BeautifulSoup(resp.content, 'xml')
+            # Gebruik de standaard 'html.parser' in plaats van 'xml' om crashes te voorkomen
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            
+            # In RSS-feeds zitten artikelen in <item> tags
             items = soup.find_all('item')
             
-            # Pak de eerste titel voor de debug mail
-            if items:
-                feed_samples += f"<li>{name} eerste item: {items[0].title.get_text()[:50]}...</li>"
-
             for item in items:
-                title = item.find('title').get_text(strip=True) if item.find('title') else ""
-                link = item.find('link').get_text(strip=True) if item.find('link') else ""
-                if not link and item.find('guid'):
-                    link = item.find('guid').get_text(strip=True)
+                # Omdat we html.parser gebruiken op XML, zoeken we simpelweg naar de tags
+                title_tag = item.find('title')
+                link_tag = item.find('link')
+                guid_tag = item.find('guid')
 
-                if not title or not link: continue
+                title = title_tag.get_text(strip=True) if title_tag else ""
+                # De link staat soms in <link>, soms in de tekst van <link>, of in <guid>
+                link = ""
+                if link_tag:
+                    link = link_tag.get_text(strip=True)
+                if not link and guid_tag:
+                    link = guid_tag.get_text(strip=True)
 
-                # Check op keywords
-                txt = (title + " " + link).lower()
-                if any(k in txt for k in KEYWORDS):
+                if not title or not link:
+                    continue
+
+                # De Check
+                combined_text = (title + " " + link).lower()
+                if any(k in combined_text for k in KEYWORDS):
                     if not any(link in r for r in results):
                         archive_link = f"https://archive.is/{link}"
                         results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
         
         except Exception as e:
-            feed_samples += f"<li>{name} Fout: {str(e)[:30]}</li>"
+            print(f"Fout bij {name}: {e}")
             
-    if not results:
-        return f"<li>Niets gevonden met filters.</li><p><strong>Wat de scraper wel zag:</strong></p><ul>{feed_samples}</ul>"
     return "".join(results)
 
 def send_mail(content):
-    html_body = f"<html><body><h2>📺 Media Update</h2><ul>{content}</ul></body></html>"
+    if not content:
+        content = "<li>Geen media-artikelen gevonden in de RSS-feeds.</li>"
+
+    html_body = f"""
+    <html>
+        <body style='font-family: sans-serif; line-height: 1.6; color: #333;'>
+            <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px;'>
+                <h2 style='color: #2c3e50;'>📺 TV & Media Update</h2>
+                <ul style='list-style: none; padding: 0;'>
+                    {content}
+                </ul>
+            </div>
+        </body>
+    </html>
+    """
+    
     resend.Emails.send({
         "from": EMAIL_FROM,
         "to": [EMAIL_RECEIVER],
@@ -68,4 +92,5 @@ def send_mail(content):
     })
 
 if __name__ == "__main__":
-    send_mail(get_reviews())
+    content = get_reviews()
+    send_mail(content)
