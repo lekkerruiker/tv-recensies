@@ -1,5 +1,5 @@
 import requests
-from bs4 import BeautifulSoup
+import re
 import resend
 import os
 import sys
@@ -31,42 +31,33 @@ def get_reviews():
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
-            # We laden de ruwe content in BeautifulSoup
-            soup = BeautifulSoup(resp.content, 'html.parser')
-            items = soup.find_all('item')
+            # We behandelen de hele feed als platte tekst om blokkades te omzeilen
+            content = resp.text
+
+            # We hakken de tekst op in individuele <item> blokken
+            items = re.findall(r'<item>(.*?)</item>', content, re.DOTALL)
             
             for item in items:
-                # TITEL VINDEN: We proberen 3 methodes voor maximale kans op tekst
-                title = ""
-                if item.title:
-                    # Methode 1: Directe tekst (voor Parool/Telegraaf)
-                    title = item.title.get_text(strip=True)
-                    # Methode 2: Als methode 1 leeg is, kijk naar de 'next_sibling' (voor CDATA blokken)
-                    if not title and item.title.string:
-                        title = item.title.string.strip()
+                # We vissen de titel en link eruit met Regex
+                title_match = re.search(r'<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', item, re.DOTALL)
+                link_match = re.search(r'<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</link>', item, re.DOTALL)
                 
-                # LINK VINDEN
-                link = ""
-                # We zoeken eerst naar de tekst in de link tag
-                if item.link:
-                    link = item.link.get_text(strip=True)
-                # Als dat niet werkt, proberen we de GUID
-                if not link and item.find('guid'):
-                    link = item.find('guid').get_text(strip=True)
-                
-                # De "Vibe-Check": als we nog steeds geen link hebben, is het item onbruikbaar
-                if not link or not link.startswith('http'):
-                    continue
-                
-                # Als de titel nog steeds leeg is, gebruiken we een deel van de URL als nood-titel
-                if not title:
-                    title = link.split('/')[-1].replace('-', ' ').replace('.html', '').capitalize()
+                # Fallback voor link via <guid> als <link> leeg is
+                if not link_match:
+                    link_match = re.search(r'<guid.*?>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</guid>', item, re.DOTALL)
 
-                combined_text = (title + " " + link).lower()
-                if any(k in combined_text for k in KEYWORDS):
-                    if not any(link in r for r in results):
-                        archive_link = f"https://archive.is/{link}"
-                        results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
+                if title_match and link_match:
+                    title = title_match.group(1).strip()
+                    link = link_match.group(1).strip()
+                    
+                    # Opschonen van eventuele HTML restanten in de titel
+                    title = re.sub('<[^<]+?>', '', title)
+
+                    combined_text = (title + " " + link).lower()
+                    if any(k in combined_text for k in KEYWORDS):
+                        if not any(link in r for r in results):
+                            archive_link = f"https://archive.is/{link}"
+                            results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
         
         except Exception as e:
             print(f"Fout bij {name}: {e}")
