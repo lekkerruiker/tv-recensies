@@ -5,105 +5,104 @@ import os
 import sys
 from datetime import datetime
 
-# 1. Instellingen en Secrets ophalen
+# 1. Config
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "onboarding@resend.dev")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 
-# Veiligheidscheck: Stoppen als de basisinstellingen ontbreken
 if not API_KEY or not EMAIL_RECEIVER:
-    print("❌ FOUT: Geen API_KEY of EMAIL_RECEIVER gevonden in GitHub Secrets.")
-    print(f"DEBUG: Key aanwezig: {'Ja' if API_KEY else 'Nee'}")
-    print(f"DEBUG: Ontvanger aanwezig: {'Ja' if EMAIL_RECEIVER else 'Nee'}")
+    print("❌ FOUT: Mis gegevens in GitHub Secrets.")
     sys.exit(1)
 
 resend.api_key = API_KEY
 
-# 2. De Scraper
+# De bronnen die we scannen
 SOURCES = {
     "NRC": "https://www.nrc.nl/rubriek/tv-recensies/",
-    "Volkskrant": "https://www.volkskrant.nl/kijk-en-luister",
-    "Parool": "https://www.parool.nl/media"
+    "Volkskrant": "https://www.volkskrant.nl/televisie",
+    "Trouw": "https://www.trouw.nl/cultuur-media",
+    "Parool": "https://www.parool.nl/columns-opinie",
+    "Telegraaf": "https://www.telegraaf.nl/entertainment/media"
 }
 
 def get_reviews():
-    print("🔍 Scraper gestart...")
+    print("🔍 Sniper-Scraper gestart...")
     results = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     for name, url in SOURCES.items():
         try:
             print(f"Checking {name}...")
             response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-            
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.find_all('a', href=True)
             
             found_count = 0
             for link in links:
                 href = link['href']
-                text = link.get_text().strip()
+                text = link.get_text().strip().lower()
                 
-                # Filter op recensies (eenvoudige vibe-check op tekst)
-                if len(text) > 10 and any(keyword in text.lower() for keyword in ['recensie', 'tv', 'kijk']):
-                    if not href.startswith('http'):
-                        # Maak van relatieve link een volledige link
-                        base = "https://www.nrc.nl" if "nrc" in name.lower() else "https://www.volkskrant.nl" if "volks" in name.lower() else "https://www.parool.nl"
-                        href = base + href if href.startswith('/') else base + '/' + href
+                # Per krant specifieke logica
+                is_match = False
+                if name == "NRC" and ("zap" in text or "/nieuws/2026/" in href): # NRC gebruikt datum in URL
+                    is_match = True
+                elif name == "Volkskrant" and "tv-recensie" in text:
+                    is_match = True
+                elif name == "Trouw" and "blik van bos" in text:
+                    is_match = True
+                elif name == "Parool" and "han lips" in text:
+                    is_match = True
+                elif name == "Telegraaf" and "marcel peereboom voller" in text:
+                    is_match = True
+
+                if is_match:
+                    # URL fixen
+                    full_url = href if href.startswith('http') else f"https://www.{name.lower()}.nl{href}"
+                    if "telegraaf" in name.lower() and not full_url.startswith('http'): 
+                        full_url = "https://www.telegraaf.nl" + href
+
+                    # Dubbelingen voorkomen
+                    if any(full_url in r for r in results): continue
                     
-                    # Directe archive.is link genereren
-                    archive_link = f"https://archive.is/{href}"
-                    
-                    results.append(f"<li><strong>{name}</strong>: {text}<br><a href='{archive_link}'>Lees via Archive.is</a></li><br>")
+                    archive_link = f"https://archive.is/{full_url}"
+                    clean_title = text.replace('\n', ' ').strip()[:100] # Max 100 tekens
+                    results.append(f"<li><strong>[{name}]</strong>: {clean_title.capitalize()}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
                     found_count += 1
                 
-                if found_count >= 3: # Max 3 per krant
-                    break
+                if found_count >= 2: break # We willen de mail niet te lang maken
         except Exception as e:
             print(f"⚠️ Fout bij {name}: {e}")
             
     return "".join(results)
 
-# 3. De Mailer
 def send_mail(content):
     if not content:
-        print("Empty Content: Geen recensies gevonden vandaag.")
-        content = "<li>Geen nieuwe recensies gevonden met de huidige zoektermen.</li>"
+        print("Niets nieuws gevonden.")
+        content = "<li>Geen specifieke media-recensies gevonden in de rubrieken vandaag.</li>"
 
-    print("✉️ Mail verzenden via Resend...")
-    
     html_body = f"""
     <html>
-        <body style='font-family: sans-serif; line-height: 1.6;'>
-            <h1 style='color: #333;'>Dagelijkse TV-Updates</h1>
-            <p>Hier zijn de recensies van vandaag:</p>
-            <ul>
+        <body style='font-family: Arial, sans-serif; max-width: 600px; margin: auto;'>
+            <h2 style='color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;'>📺 TV Recensies van Vandaag</h2>
+            <ul style='list-style: none; padding: 0;'>
                 {content}
             </ul>
-            <hr>
-            <p style='font-size: 0.8em; color: #666;'>Gemaakt met vibe-coding & Resend.</p>
+            <p style='font-size: 0.8em; color: #95a5a6; margin-top: 20px;'>Gegenereerd op {datetime.now().strftime('%d-%m-%Y %H:%M')}</p>
         </body>
     </html>
     """
 
     try:
-        params = {
+        resend.Emails.send({
             "from": EMAIL_FROM,
             "to": [EMAIL_RECEIVER],
-            "subject": f"TV Recensies - {datetime.now().strftime('%d-%m-%Y')}",
+            "subject": f"Media Update: {datetime.now().strftime('%d %b')}",
             "html": html_body,
-        }
-        
-        email = resend.Emails.send(params)
-        print(f"✅ Succes! Mail verzonden. ID: {email['id']}")
+        })
+        print("✅ Mail verzonden!")
     except Exception as e:
-        print(f"❌ Resend Fout: {e}")
-        sys.exit(1)
+        print(f"❌ Mail fout: {e}")
 
-# 4. Main Execution
 if __name__ == "__main__":
-    review_html = get_reviews()
-    send_mail(review_html)
+    content = get_reviews()
+    send_mail(content)
