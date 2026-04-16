@@ -32,9 +32,9 @@ def get_ai_sorted_list(articles):
     
     prompt = (
         "Sorteer deze lijst voor een TV-professional. "
-        "PRIORITEIT 1: TV-recensies (Volkskrant) en 'Zap' of 'Kijkt' (NRC). "
-        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows, VI en presentatoren (zoals Tina Nijkamp). "
-        "Verwijder items die over buitenlandse politiek of religie gaan. "
+        "PRIORITEIT 1: TV-recensies (Volkskrant, Trouw) en 'Zap' of 'Kijkt' (NRC). "
+        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows, VI en media-experts zoals Tina Nijkamp. "
+        "Verwijder items die per ongeluk door het filter zijn geglipt en niets met TV te maken hebben. "
         "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
@@ -78,32 +78,31 @@ def run_scraper():
 
                     keep = False
                     
-                    # --- DE GEFINETUNEDE FILTER ---
+                    # --- DE SECTIE-SPECIFIEKE GRENDELS ---
 
-                    # 1. VOLKSKRANT: Alleen uit de TV sectie
-                    if name == "Volkskrant":
-                        if "/televisie" in link.lower():
-                            keep = True
+                    # 1. VOLKSKRANT: Alleen TV sectie
+                    if name == "Volkskrant" and "/televisie" in link.lower():
+                        keep = True
                     
-                    # 2. TELEGRAAF: Alleen uit de Media subsectie
-                    elif name == "Telegraaf":
-                        if "/entertainment/media" in link.lower():
-                            keep = True
+                    # 2. TELEGRAAF: Alleen Media subsectie
+                    elif name == "Telegraaf" and "/entertainment/media" in link.lower():
+                        keep = True
                     
-                    # 3. NRC: Zap, Kijkt of VIP auteurs
+                    # 3. TROUW: Alleen Cultuur-Media sectie
+                    elif name == "Trouw" and "/cultuur-media" in link.lower():
+                        keep = True
+                    
+                    # 4. NRC: Zap, Kijkt of VIP auteurs
                     elif name == "NRC":
                         if any(x in title.lower() for x in ['zap', 'kijkt']) or any(c in title.lower() for c in CRITICS):
                             keep = True
 
-                    # 4. OVERIG (Trouw/Parool) & Algemene TV-checks
+                    # 5. ALGEMEEN FILTER (voor Parool of indien bovenstaande niet matcht maar VIP is)
                     if not keep:
-                        # Check op VIP auteurs
                         if any(critic in title.lower() for critic in CRITICS):
                             keep = True
-                        # Check op Harde TV keywords in de titel
                         elif any(word in title.lower() for word in TV_KEYWORDS):
                             keep = True
-                        # Check op Omroep context
                         elif any(o in full_lower for o in OMROEPEN):
                             if any(x in full_lower for x in ['tv', 'televisie', 'uitzending', 'scherm']):
                                 keep = True
