@@ -25,39 +25,39 @@ FEEDS = {
 
 def get_reviews():
     results = []
-    # De filters die we gebruiken
     KEYWORDS = ['lips', 'zap', 'bos', 'peereboom', 'marcel', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-']
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
 
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
-            # Gebruik de standaard 'html.parser' in plaats van 'xml' om crashes te voorkomen
+            # We gebruiken BeautifulSoup om de ruwe XML-tekst te doorzoeken
             soup = BeautifulSoup(resp.content, 'html.parser')
-            
-            # In RSS-feeds zitten artikelen in <item> tags
             items = soup.find_all('item')
             
             for item in items:
-                # Omdat we html.parser gebruiken op XML, zoeken we simpelweg naar de tags
-                title_tag = item.find('title')
-                link_tag = item.find('link')
-                guid_tag = item.find('guid')
-
-                title = title_tag.get_text(strip=True) if title_tag else ""
-                # De link staat soms in <link>, soms in de tekst van <link>, of in <guid>
+                # We pakken de inhoud van de tags handmatig om parser-fouten te omzeilen
+                title = ""
+                if item.title:
+                    title = item.title.get_text(strip=True)
+                
+                # De link is lastig in HTML-parsers, we proberen verschillende methodes
                 link = ""
-                if link_tag:
-                    link = link_tag.get_text(strip=True)
-                if not link and guid_tag:
-                    link = guid_tag.get_text(strip=True)
+                if item.link:
+                    link = item.link.next_sibling.strip() if item.link.next_sibling else item.link.get_text(strip=True)
+                
+                # Als dat niet werkt (vaak bij NRC/VK), pakken we de GUID of de ruwe tekst
+                if not link or len(link) < 10:
+                    guid = item.find('guid')
+                    if guid:
+                        link = guid.get_text(strip=True)
 
-                if not title or not link:
+                if not title or not link or not link.startswith('http'):
                     continue
 
-                # De Check
                 combined_text = (title + " " + link).lower()
                 if any(k in combined_text for k in KEYWORDS):
+                    # Unieke check
                     if not any(link in r for r in results):
                         archive_link = f"https://archive.is/{link}"
                         results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
@@ -69,17 +69,15 @@ def get_reviews():
 
 def send_mail(content):
     if not content:
-        content = "<li>Geen media-artikelen gevonden in de RSS-feeds.</li>"
+        content = "<li>Geen nieuwe recensies gevonden.</li>"
 
     html_body = f"""
     <html>
-        <body style='font-family: sans-serif; line-height: 1.6; color: #333;'>
-            <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px;'>
-                <h2 style='color: #2c3e50;'>📺 TV & Media Update</h2>
-                <ul style='list-style: none; padding: 0;'>
-                    {content}
-                </ul>
-            </div>
+        <body style='font-family: Arial, sans-serif; line-height: 1.6;'>
+            <h2 style='color: #2c3e50;'>📺 TV & Media Update</h2>
+            <ul style='list-style: none; padding: 0;'>
+                {content}
+            </ul>
         </body>
     </html>
     """
