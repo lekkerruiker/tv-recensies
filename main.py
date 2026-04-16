@@ -28,16 +28,14 @@ def get_ai_sorted_list(articles):
         return articles
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    # We geven nu ook de snippet mee zodat Gemini de context begrijpt
     input_data = [{"id": i, "title": a['title'], "source": a['source'], "snippet": a['snippet'][:100]} for i, a in enumerate(articles)]
     
     prompt = (
-        "Je bent een media-redacteur. Sorteer de lijst op relevantie voor de Nederlandse TV-sector. "
-        "PRIORITEIT 1: TV-recensies (Trouw, Volkskrant, Han Lips) en 'Zap'/'Kijkt' (NRC). "
-        "BELANGRIJK: Trouw-titels zijn vaak cryptisch (bijv. 'Verzoening als bezweringsformule'). "
-        "Herken deze als TV-recensies op basis van de context. "
-        "Verwijder artikelen die over boeken, religie (PKN) of theater gaan. "
-        "Geef ENKEL een JSON lijst met ID-nummers terug in de nieuwe volgorde."
+        "Sorteer deze media-artikelen voor een TV-professional. "
+        "PRIORITEIT 1: TV-recensies (Maaike Bos, Han Lips, Volkskrant) en 'Zap'/'Kijkt' (NRC). "
+        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows en Tina Nijkamp. "
+        "Verwijder alles wat niet direct met TV te maken heeft. "
+        "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
     
@@ -53,6 +51,7 @@ def run_scraper():
     all_found = []
     seen_links = set()
     
+    # VIP namen (nu ook expliciet Maaike Bos voor Trouw)
     CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
 
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -77,32 +76,35 @@ def run_scraper():
 
                     keep = False
                     
-                    # --- DE BRON-SPECIFIEKE LOGICA ---
+                    # --- DE NIEUWE STRENGE LOGICA ---
 
-                    # 1. PAROOL, VOLKSKRANT, TELEGRAAF: Blijven op URL-sectie (is daar betrouwbaar)
-                    if name == "Parool" and "han-lips" in link.lower(): keep = True
-                    elif name == "Volkskrant" and "televisie" in link.lower(): keep = True
-                    elif name == "Telegraaf" and "entertainment/media" in link.lower(): keep = True
+                    # 1. TROUW: Exclusief Maaike Bos (harde eis)
+                    if name == "Trouw":
+                        if "maaike bos" in full_lower:
+                            keep = True
                     
-                    # 2. TROUW & NRC: Laat ALLES binnen wat uit de juiste hoek komt of VIP is
-                    # Gemini filtert de ruis er later wel uit.
-                    elif name == "Trouw":
-                        # Als het in de media-link staat OF een VIP is, laten we het door naar de AI
-                        if "cultuur-media" in link.lower() or any(c in title.lower() for c in ['maaike bos', 'peereboom']):
+                    # 2. PAROOL: Alleen Han Lips
+                    elif name == "Parool" and "han-lips" in link.lower():
+                        keep = True
+                    
+                    # 3. VOLKSKRANT: Alleen TV sectie
+                    elif name == "Volkskrant" and "televisie" in link.lower():
+                        keep = True
+                    
+                    # 4. TELEGRAAF: Alleen Media sectie
+                    elif name == "Telegraaf" and "entertainment/media" in link.lower():
+                        keep = True
+                    
+                    # 5. NRC & OVERIG: Zap, Kijkt of VIP auteurs
+                    else:
+                        if any(x in title.lower() for x in ['zap', 'kijkt']) or any(c in title.lower() for c in CRITICS):
                             keep = True
-                        # Failsafe voor de korte Trouw links: als de snippet TV-termen bevat
-                        elif any(word in full_lower for word in ['kijken', 'uitzending', 'televisie', ' npo']):
+                        elif any(word in title.lower() for word in ['talkshow', 'npo', 'rtl', 'sbs', 'kijkcijfer']):
                             keep = True
 
-                    elif name == "NRC":
-                        if any(x in title.lower() for x in ['zap', 'kijkt', 'fortuin', 'beukers', 'stokmans']):
-                            keep = True
-                        elif "cultuur-media" in link.lower():
-                            keep = True
-
-                    # --- HARD BLOCK VOOR RUIS (voorkomt dat de AI te veel werk heeft) ---
+                    # --- HARD BLOCK VOOR RUIS ---
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
-                        if not any(vip in title.lower() for vip in ['zap', 'lips', 'fortuin', 'kijkt']):
+                        if not any(vip in title.lower() for vip in ['zap', 'lips', 'maaike bos']):
                             keep = False
 
                     if keep:
@@ -110,7 +112,6 @@ def run_scraper():
                         seen_links.add(link)
         except: continue
     
-    # AI doet nu de zware filtering en sortering
     sorted_articles = get_ai_sorted_list(all_found)
     
     results_html = ""
