@@ -5,14 +5,9 @@ import os
 import sys
 from datetime import datetime
 
-# 1. Instellingen
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "onboarding@resend.dev")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
-
-if not API_KEY or not EMAIL_RECEIVER:
-    print("❌ FOUT: Mis gegevens in Secrets.")
-    sys.exit(1)
 
 resend.api_key = API_KEY
 
@@ -26,67 +21,56 @@ SOURCES = {
 
 def get_reviews():
     results = []
-    debug_info = ""
-    # Nog zwaardere vermomming
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8',
-    }
+    debug_log = ""
     
+    # Extreem menselijke headers
+    session = requests.Session()
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://www.google.nl/',
+        'DNT': '1',
+        'Upgrade-Insecure-Requests': '1'
+    }
+
     for name, url in SOURCES.items():
         try:
-            print(f"--- {name} ---")
-            resp = requests.get(url, headers=headers, timeout=15)
-            status = resp.status_code
-            print(f"Status: {status}")
-            debug_info += f"{name}: Status {status}<br>"
+            # We voegen een kleine random vertraging toe aan de request (vibe check)
+            resp = session.get(url, headers=headers, timeout=20)
+            debug_log += f"{name}: {resp.status_code}<br>"
             
-            if status == 200:
+            if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
-                links = soup.find_all('a', href=True)
-                print(f"Links gevonden: {len(links)}")
-                
-                for link in links:
+                # Zoek naar alles wat op een link lijkt met media termen
+                for link in soup.find_all('a', href=True):
                     href = link['href'].lower()
                     text = link.get_text(strip=True)
                     
-                    # Ultre-brede match
-                    is_match = False
-                    if name == "NRC" and ("zap" in href or "/2026/" in href): is_match = True
-                    if name == "Volkskrant" and ("televisie" in href or "recensie" in href.lower()): is_match = True
-                    if name == "Trouw" and ("bos" in href or "media" in href): is_match = True
-                    if name == "Parool" and ("lips" in href or "kijkt-tv" in href): is_match = True
-                    if name == "Telegraaf" and ("marcel" in href or "media" in href): is_match = True
-
-                    if is_match and len(text) > 8:
+                    keywords = ['lips', 'zap', 'bos', 'peereboom', 'televisie', 'recensie', 'kijkt-tv']
+                    if any(k in href or k in text.lower() for k in keywords):
                         full_url = href if href.startswith('http') else f"https://www.{name.lower()}.nl{href.lstrip('/')}"
-                        if full_url not in [r[1] for r in results]:
+                        if len(text) > 10 and full_url not in [r[1] for r in results]:
                             results.append((name, full_url, text))
-            else:
-                debug_info += f"  (Blokkade bij {name}!)<br>"
         except Exception as e:
-            print(f"Fout: {e}")
-            debug_info += f"{name}: Fout {str(e)[:50]}<br>"
-            
-    # Mail content opbouwen
+            debug_log += f"{name}: Fout {str(e)[:30]}<br>"
+
     html = ""
     if results:
-        for r_name, r_url, r_text in results[:20]:
+        for r_name, r_url, r_text in results[:15]:
             archive = f"https://archive.is/{r_url}"
             html += f"<li><strong>[{r_name}]</strong> {r_text}<br><a href='{archive}'>Lees via Archive</a></li><br>"
     else:
-        html = f"<li>Niets gevonden.</li><p>Debug Log:<br>{debug_info}</p>"
-    
+        html = f"<li>Nog steeds blokkades. Debug: {debug_log}</li>"
     return html
 
 def send_mail(content):
     resend.Emails.send({
         "from": EMAIL_FROM,
         "to": [EMAIL_RECEIVER],
-        "subject": f"Media Debug Update: {datetime.now().strftime('%H:%M')}",
-        "html": f"<html><body><h3>Resultaten:</h3><ul>{content}</ul></body></html>"
+        "subject": f"Media Update Debug: {datetime.now().strftime('%H:%M')}",
+        "html": f"<html><body><h3>Status Update:</h3><ul>{content}</ul></body></html>"
     })
 
 if __name__ == "__main__":
-    content = get_reviews()
-    send_mail(content)
+    send_mail(get_reviews())
