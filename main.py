@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-# 1. Config
+# 1. Instellingen
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "onboarding@resend.dev")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
@@ -16,11 +16,9 @@ if not API_KEY or not EMAIL_RECEIVER:
 
 resend.api_key = API_KEY
 
-# Datums van vandaag en gisteren voor URL-check
-today_str = datetime.now().strftime("%Y/%m/%d")
-yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
-short_today = datetime.now().strftime("%Y-%m-%d")
-short_yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+# Tijdvenster: we zoeken naar 2026/04/16 en 2026/04/15
+today_path = datetime.now().strftime("%Y/%m/%d")
+yesterday_path = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
 
 SOURCES = {
     "NRC": "https://www.nrc.nl/rubriek/tv-recensies/",
@@ -31,7 +29,7 @@ SOURCES = {
 }
 
 def get_reviews():
-    print(f"🔍 Scraper zoekt naar recensies van {short_today} en {short_yesterday}...")
+    print(f"🔍 Scannen voor datums: {today_path} en {yesterday_path}")
     results = []
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
@@ -41,53 +39,41 @@ def get_reviews():
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.find_all('a', href=True)
             
-            found_count = 0
+            print(f"--- {name}: {len(links)} links gevonden ---")
+            
+            found_in_source = 0
             for link in links:
                 href = link['href']
-                text = link.get_text().strip().lower()
+                # Pak de tekst uit de link of uit een kopje (h1-h4) in de link
+                text_element = link.find(['h1', 'h2', 'h3', 'h4', 'span'])
+                text = text_element.get_text().strip() if text_element else link.get_text().strip()
                 
-                # We checken of de tekst OF de URL een van onze trefwoorden bevat
+                low_href = href.lower()
+                low_text = text.lower()
+                
+                # De Sniper-Logica per krant
                 is_match = False
-                
-                # NRC: Check op 'zap' of datum van gisteren/vandaag in URL
-                if name == "NRC":
-                    if any(d in href for d in [today_str, yesterday_str]) or "zap" in text:
-                        is_match = True
-                
-                # Volkskrant: 'tv-recensie'
-                elif name == "Volkskrant":
-                    if "tv-recensie" in text or "televisie" in href:
-                        is_match = True
-                
-                # Trouw: 'blik van bos'
-                elif name == "Trouw":
-                    if "blik van bos" in text or "bos" in href:
-                        is_match = True
-                
-                # Parool: 'han lips'
-                elif name == "Parool":
-                    if "han lips" in text or "han-lips" in href:
-                        is_match = True
-                
-                # Telegraaf: 'marcel'
-                elif name == "Telegraaf":
-                    if "marcel" in text or "marcel-peereboom-voller" in href:
-                        is_match = True
+                if name == "NRC" and (today_path in href or yesterday_path in href):
+                    is_match = True
+                elif name == "Volkskrant" and ("televisie" in low_href or "recensie" in low_text):
+                    is_match = True
+                elif name == "Trouw" and ("bos" in low_href or "blik" in low_text):
+                    is_match = True
+                elif name == "Parool" and ("lips" in low_href or "han" in low_text):
+                    is_match = True
+                elif name == "Telegraaf" and ("marcel" in low_href or "media" in low_href):
+                    is_match = True
 
-                if is_match:
+                if is_match and len(text) > 10:
                     full_url = href if href.startswith('http') else f"https://www.{name.lower()}.nl{href}"
-                    if "telegraaf" in name.lower() and not full_url.startswith('http'): 
-                        full_url = "https://www.telegraaf.nl" + href
-
+                    # Voorkom dubbelingen
                     if any(full_url in r for r in results): continue
                     
                     archive_link = f"https://archive.is/{full_url}"
-                    display_text = text.capitalize() if len(text) > 5 else "Klik hier voor de recensie"
-                    
-                    results.append(f"<li><strong>[{name}]</strong>: {display_text}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
-                    found_count += 1
+                    results.append(f"<li><strong>[{name}]</strong>: {text}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
+                    found_in_source += 1
                 
-                if found_count >= 3: break
+                if found_in_source >= 3: break
         except Exception as e:
             print(f"⚠️ Fout bij {name}: {e}")
             
@@ -95,26 +81,29 @@ def get_reviews():
 
 def send_mail(content):
     if not content:
-        content = "<li>Geen recensies gevonden van vandaag of gisteren. De redacties zijn blijkbaar lui.</li>"
+        content = "<li>Geen recensies gevonden in de geselecteerde rubrieken voor de afgelopen 48 uur.</li>"
 
     html_body = f"""
     <html>
-        <body style='font-family: Arial, sans-serif; max-width: 600px; margin: auto;'>
-            <h2 style='color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;'>📺 TV Recensies (Laatste 48u)</h2>
+        <body style='font-family: Arial, sans-serif;'>
+            <h2 style='color: #333;'>📺 TV Recensies Update</h2>
             <ul style='list-style: none; padding: 0;'>
                 {content}
             </ul>
-            <p style='font-size: 0.8em; color: #95a5a6; margin-top: 20px;'>Check van {short_today}</p>
         </body>
     </html>
     """
-    resend.Emails.send({
-        "from": EMAIL_FROM,
-        "to": [EMAIL_RECEIVER],
-        "subject": f"Media Update: {datetime.now().strftime('%d %b')}",
-        "html": html_body,
-    })
+    try:
+        resend.Emails.send({
+            "from": EMAIL_FROM,
+            "to": [EMAIL_RECEIVER],
+            "subject": f"Media Update: {datetime.now().strftime('%d-%m-%Y')}",
+            "html": html_body,
+        })
+        print("✅ Mail verzonden!")
+    except Exception as e:
+        print(f"❌ Resend Fout: {e}")
 
 if __name__ == "__main__":
-    content = get_reviews()
-    send_mail(content)
+    review_html = get_reviews()
+    send_mail(review_html)
