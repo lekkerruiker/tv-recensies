@@ -33,8 +33,8 @@ def get_ai_sorted_list(articles):
     prompt = (
         "Sorteer deze lijst voor een TV-professional. "
         "PRIORITEIT 1: TV-recensies (Volkskrant) en 'Zap' of 'Kijkt' (NRC). "
-        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows, VI en presentatoren. "
-        "Verwijder items die over buitenlandse politiek of religie gaan (Gaza, Soedan, kerk). "
+        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows, VI en presentatoren (zoals Tina Nijkamp). "
+        "Verwijder items die over buitenlandse politiek of religie gaan. "
         "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
@@ -51,13 +51,9 @@ def run_scraper():
     all_found = []
     seen_links = set()
     
-    # VIP Recensenten
+    # VIP Recensenten & TV Termen
     CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
-    
-    # Specifieke TV termen (zonder losse 'kijkt' om ruis te voorkomen)
-    TV_KEYWORDS = ['zap', 'nrc kijkt', 'tv-recensie', 'televisie', 'tv-', 'talkshow', 'vandaag inside', 'mafs', 'npo', 'rtl', 'sbs', 'presentator']
-    
-    # Omroepen
+    TV_KEYWORDS = ['zap', 'nrc kijkt', 'tv-recensie', 'televisie', 'tv-', 'talkshow', 'vandaag inside', 'mafs', 'npo', 'rtl', 'sbs', 'kijkcijfer']
     OMROEPEN = ['avrotros', 'powned', 'bnnvara', 'kro-ncrv', 'omroep max', 'wnl', 'vpro', 'human', 'ntr', 'omroep zwart', 'eo']
 
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -80,27 +76,39 @@ def run_scraper():
                     snippet = clean_text(desc_match.group(1)) if desc_match else ""
                     full_lower = (title + " " + snippet + " " + link).lower()
 
-                    # --- DE VERFIJNDE FILTER ---
                     keep = False
                     
-                    # 1. Volkskrant TV Sectie (De 'Holy Grail' voor de VK recensie)
-                    if name == "Volkskrant" and "/televisie" in link.lower():
-                        keep = True
-                    
-                    # 2. VIP Auteurs of NRC Zap
-                    elif any(critic in title.lower() for critic in CRITICS) or 'zap' in title.lower():
-                        keep = True
+                    # --- DE GEFINETUNEDE FILTER ---
 
-                    # 3. Harde TV keywords in de titel
-                    elif any(word in title.lower() for word in TV_KEYWORDS):
-                        keep = True
+                    # 1. VOLKSKRANT: Alleen uit de TV sectie
+                    if name == "Volkskrant":
+                        if "/televisie" in link.lower():
+                            keep = True
                     
-                    # 4. Omroep context check
-                    elif any(o in full_lower for o in OMROEPEN):
-                        if any(x in full_lower for x in ['tv', 'televisie', 'uitzending', 'scherm']):
+                    # 2. TELEGRAAF: Alleen uit de Media subsectie
+                    elif name == "Telegraaf":
+                        if "/entertainment/media" in link.lower():
+                            keep = True
+                    
+                    # 3. NRC: Zap, Kijkt of VIP auteurs
+                    elif name == "NRC":
+                        if any(x in title.lower() for x in ['zap', 'kijkt']) or any(c in title.lower() for c in CRITICS):
                             keep = True
 
-                    # --- HARD BLOCK VOOR RUIS (Gaza/Soedan/Politiek) ---
+                    # 4. OVERIG (Trouw/Parool) & Algemene TV-checks
+                    if not keep:
+                        # Check op VIP auteurs
+                        if any(critic in title.lower() for critic in CRITICS):
+                            keep = True
+                        # Check op Harde TV keywords in de titel
+                        elif any(word in title.lower() for word in TV_KEYWORDS):
+                            keep = True
+                        # Check op Omroep context
+                        elif any(o in full_lower for o in OMROEPEN):
+                            if any(x in full_lower for x in ['tv', 'televisie', 'uitzending', 'scherm']):
+                                keep = True
+
+                    # --- HARD BLOCK VOOR RUIS ---
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'pkn', 'oekraïne']):
                         keep = False
 
