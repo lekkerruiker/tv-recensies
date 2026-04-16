@@ -1,11 +1,26 @@
-# ... (rest van de file blijft hetzelfde tot aan 'Dependencies installeren')
+name: Dagelijkse Recensies
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  stuur-recensies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Python instellen
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Dependencies installeren
-        run: |
-          pip install requests beautifulsoup4 resend # Voeg resend hier toe
+        run: pip install requests beautifulsoup4 resend
 
       - name: Script draaien
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: python main.py
