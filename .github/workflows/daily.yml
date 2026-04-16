@@ -19,10 +19,10 @@ jobs:
       - name: Dependencies installeren
         run: pip install requests beautifulsoup4 resend
 
-- name: Script draaien
+      - name: Script draaien
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}  # DEZE MOEST ERBIJ
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}          # DEZE OOK VOOR DE ZEKERHEID
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
         run: python main.py
