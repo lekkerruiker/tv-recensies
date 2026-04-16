@@ -4,11 +4,11 @@ import re
 from datetime import datetime
 import time
 
-# 1. Instellingen - Gebruik exacte namen uit de omgeving
+# 1. Instellingen
 API_KEY = os.getenv("RESEND_API_KEY")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
-EMAIL_FROM = "onboarding@resend.dev" 
+EMAIL_FROM = "onboarding@resend.dev"
 
 FEEDS = {
     "NRC": "https://www.nrc.nl/rss/",
@@ -20,32 +20,44 @@ FEEDS = {
 
 def get_gemini_summary(title, source):
     if not GEMINI_KEY:
-        return "AI samenvatting niet beschikbaar."
+        return "AI Key niet gevonden."
     
+    # Gebruik de v1beta endpoint (vaak stabieler voor eenvoudige API-keys)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    prompt = f"Analyseer deze krantentitel: '{title}' van {source}. Is dit relevant voor TV, media, series of journalistiek? Zo ja: geef 1 korte samenvatting in het Nederlands. Zo nee: antwoord alleen met het woord REJECT."
+    
+    prompt = f"Analyseer de krantentitel: '{title}' van {source}. Gaat dit over TV, series, media of journalistiek? Zo ja: geef een samenvatting van precies 1 zin in het Nederlands. Zo nee: antwoord met alleen het woord REJECT."
+    
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
     
     try:
-        time.sleep(1) 
-        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
-        result = resp.json()
-        # Controleer of de structuur van de respons klopt
-        if 'candidates' in result and result['candidates']:
-            return result['candidates'][0]['content']['parts'][0]['text'].strip()
-        return "Geen samenvatting beschikbaar."
+        # Korte pauze tegen rate limiting
+        time.sleep(1.5)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        data = response.json()
+        
+        # Diepe check van de JSON structuur
+        if 'candidates' in data and len(data['candidates']) > 0:
+            text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+            return text
+        return "Samenvatting niet gelukt."
     except Exception as e:
-        print(f"AI Fout voor {title}: {e}")
-        return "Samenvatting mislukt."
+        print(f"Fout voor {title}: {e}")
+        return "AI offline."
 
 def run_scraper():
     print("--- START MEDIA SCRAPER ---")
     results = []
-    KEYWORDS = ['lips', 'zap', 'bos', 'peereboom', 'marcel', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'borsato', 'vandaag inside', 'beau', 'renze', 'eva jinek']
+    # Kritische keywords voor tv-focus
+    KEYWORDS = ['lips', 'zap', 'bos', 'peereboom', 'marcel', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'borsato', 'vandaag inside', 'jinek', 'beau']
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
+            # Pak items met Regex
             items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
             
             for item in items:
@@ -56,52 +68,63 @@ def run_scraper():
                     title = re.sub('<[^<]+?>', '', t_match.group(1).strip())
                     link = l_match.group(1).strip()
 
+                    # Check op keywords
                     if any(k in (title + " " + link).lower() for k in KEYWORDS):
-                        summary = get_gemini_summary(title, name)
-                        
-                        # Filter op REJECT
-                        if "REJECT" in summary.upper() and len(summary) < 20:
-                            continue
+                        # Alleen unieke linkjes
+                        if not any(link in r for r in results):
+                            summary = get_gemini_summary(title, name)
+                            
+                            # Filter irrelevante zaken (zoals dennenbossen/Soedan)
+                            if "REJECT" in summary.upper() and len(summary) < 20:
+                                continue
 
-                        archive_link = f"https://archive.is/{link}"
-                        results.append(f"<li style='margin-bottom:20px;'><strong style='font-size:16px;'>[{name}] {title}</strong><br><p style='color:#444; margin:5px 0;'>{summary}</p><a href='{archive_link}' style='color:#007bff;'>🔓 Lees via Archive.is</a></li>")
+                            archive_link = f"https://archive.is/{link}"
+                            results.append(f"""
+                            <li style='margin-bottom: 20px; list-style: none;'>
+                                <strong style='font-size: 16px; color: #333;'>[{name}] {title}</strong><br>
+                                <p style='margin: 5px 0; color: #666; font-style: italic;'>{summary}</p>
+                                <a href='{archive_link}' style='color: #007bff; text-decoration: none;'>🔓 Lees artikel via Archive.is</a>
+                            </li>
+                            """)
         except Exception as e:
-            print(f"Fout bij feed {name}: {e}")
+            print(f"Fout bij {name}: {e}")
             
     return "".join(results)
 
 if __name__ == "__main__":
-    # Check of de belangrijkste keys er zijn voor we starten
-    if not API_KEY or not EMAIL_RECEIVER:
-        print("❌ CRITIEKE FOUT: API_KEY of EMAIL_RECEIVER ontbreekt.")
-        exit(1)
-
     content = run_scraper()
     
     if not content:
-        content = "<li>Geen media-artikelen gevonden vandaag die door de AI-selectie kwamen.</li>"
+        content = "<li>Geen media-artikelen gevonden vandaag.</li>"
 
-    # Mail versturen
-    url = "https://api.resend.com/emails"
-    payload = {
+    # Verzend de mail
+    mail_url = "https://api.resend.com/emails"
+    mail_payload = {
         "from": EMAIL_FROM,
         "to": [EMAIL_RECEIVER],
         "subject": f"Media Update: {datetime.now().strftime('%d-%m')}",
-        "html": f"<html><body style='font-family:Arial, sans-serif; max-width:600px;'><h2>📺 Media Update</h2><hr><ul style='list-style:none; padding:0;'>{content}</ul></body></html>"
+        "html": f"""
+        <html>
+            <body style='font-family: Arial, sans-serif; line-height: 1.6; max-width: 600px;'>
+                <h2 style='color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;'>📺 Media & TV Update</h2>
+                <ul style='padding: 0;'>
+                    {content}
+                </ul>
+            </body>
+        </html>
+        """
     }
     
-    headers = {
+    mail_headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response = requests.post(mail_url, headers=mail_headers, json=mail_payload, timeout=15)
         if response.status_code in [200, 201]:
-            print(f"✅ Mail succesvol verzonden! ID: {response.json().get('id')}")
+            print("✅ Mail succesvol verzonden!")
         else:
-            print(f"❌ Mail fout {response.status_code}: {response.text}")
-            exit(1)
+            print(f"❌ Mail fout: {response.text}")
     except Exception as e:
-        print(f"❌ Systeemfout bij verzenden: {e}")
-        exit(1)
+        print(f"❌ Systeemfout: {e}")
