@@ -15,7 +15,6 @@ if not API_KEY or not EMAIL_RECEIVER:
 
 resend.api_key = API_KEY
 
-# De meest stabiele RSS feeds voor deze rubrieken
 FEEDS = {
     "NRC": "https://www.nrc.nl/rss/",
     "Volkskrant": "https://www.volkskrant.nl/kijk-en-luister/rss.xml",
@@ -26,54 +25,60 @@ FEEDS = {
 
 def get_reviews():
     results = []
-    all_titles_debug = [] # Om te zien wat er wél binnenkomt
-    
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
-            # We gebruiken 'html.parser' omdat sommige RSS-feeds niet perfecte XML zijn
-            soup = BeautifulSoup(resp.content, 'html.parser')
+            # We gebruiken 'xml' parser om de titels en linkjes echt goed te pakken
+            soup = BeautifulSoup(resp.content, 'xml')
             items = soup.find_all('item')
             
             for item in items:
-                title = item.title.get_text() if item.title else ""
-                link = item.link.get_text() if item.link else ""
+                # Soms zit de link in <link>, soms in <guid>
+                title = item.find('title').get_text(strip=True) if item.find('title') else ""
+                link = item.find('link').get_text(strip=True) if item.find('link') else ""
                 
+                # Fallback voor link als <link> leeg is (vaak bij NRC/Telegraaf)
+                if not link and item.find('guid'):
+                    link = item.find('guid').get_text(strip=True)
+
+                if not title or not link:
+                    continue
+
                 low_title = title.lower()
                 low_link = link.lower()
                 
-                # We loggen de eerste 3 titels per krant voor debuggen
-                if len(all_titles_debug) < 15:
-                    all_titles_debug.append(f"{name}: {title[:50]}...")
-
-                # ZEER BREDE FILTERS (gebaseerd op jouw auteurs en rubrieken)
+                # Filters
                 is_match = False
-                # We zoeken naar de namen die je gaf, of algemene media-termen
                 keywords = ['lips', 'zap', 'bos', 'peereboom', 'marcel', 'recensie', 'tv', 'serie', 'kijkt']
                 
                 if any(k in low_title or k in low_link for k in keywords):
                     is_match = True
 
-                if is_match and len(title) > 10:
+                if is_match:
+                    # Zorg dat de link met http begint
+                    if not link.startswith('http'):
+                        continue
+                        
                     archive_link = f"https://archive.is/{link}"
                     results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
         except Exception as e:
             print(f"Fout bij {name}: {e}")
             
-    if not results:
-        debug_list = "".join([f"<li>{t}</li>" for t in all_titles_debug])
-        return f"<li>Geen match gevonden.</li><p><strong>Laatste artikelen in de feeds:</strong></p><ul>{debug_list}</ul>"
-    
     return "".join(results)
 
 def send_mail(content):
+    if not content:
+        content = "<li>Geen nieuwe recensies gevonden vandaag.</li>"
+
     html_body = f"""
     <html>
-        <body style='font-family: sans-serif;'>
-            <h3>📺 TV Update</h3>
-            <ul>{content}</ul>
+        <body style='font-family: sans-serif; line-height: 1.6;'>
+            <h2 style='color: #2c3e50;'>📺 Media Update</h2>
+            <ul style='list-style: none; padding: 0;'>
+                {content}
+            </ul>
         </body>
     </html>
     """
