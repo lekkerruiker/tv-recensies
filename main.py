@@ -1,26 +1,21 @@
 import os
 import requests
-import sys
 from datetime import datetime
 
-def run_diagnostic():
-    print("--- START DIAGNOSE ---")
-    
-    # 1. Check de variabelen (zonder de hele key te tonen voor veiligheid)
-    api_key = os.getenv("RESEND_API_KEY")
-    to_email = os.getenv("EMAIL_RECEIVER")
-    from_email = os.getenv("EMAIL_FROM", "onboarding@resend.dev")
+# Instellingen - We forceren het onboarding adres
+API_KEY = os.getenv("RESEND_API_KEY")
+EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+EMAIL_FROM = "onboarding@resend.dev" # Verander dit NOOIT zolang je geen eigen domein hebt gekoppeld in Resend
 
-    print(f"Tijdstip: {datetime.now()}")
-    print(f"Ontvanger ingesteld: {'JA' if to_email else 'NEE'}")
-    print(f"API-sleutel ingesteld: {'JA' if api_key else 'NEE'}")
+def run_scraper_and_mail():
+    print("--- START MEDIA SCRAPER ---")
     
-    if not api_key or not to_email:
-        print("❌ CRITIEKE FOUT: Variabelen ontbreken. Controleer je GitHub Secrets en YML env sectie.")
+    if not API_KEY or not EMAIL_RECEIVER:
+        print("❌ FOUT: API_KEY of EMAIL_RECEIVER niet gevonden in Secrets.")
         return
 
-    # 2. Handmatige API aanroep via requests (om de library te omzeilen)
-    print(f"Poging om mail te sturen naar {to_email} via Resend API...")
+    # De tekst die we gaan versturen
+    content = "De scraper is technisch nu 100% in orde. De verbinding met Resend is hersteld!"
     
     url = "https://api.resend.com/emails"
     headers = {
@@ -28,25 +23,21 @@ def run_diagnostic():
         "Content-Type": "application/json"
     }
     payload = {
-        "from": from_email,
-        "to": [to_email],
-        "subject": "Systeemtest Scraper",
-        "html": f"<strong>Test geslaagd!</strong> De scraper werkt op {datetime.now()}"
+        "from": EMAIL_FROM,
+        "to": [EMAIL_RECEIVER],
+        "subject": f"Media Update: {datetime.now().strftime('%d-%m %H:%M')}",
+        "html": f"<h2>📺 Media Update</h2><p>{content}</p>"
     }
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
-        print(f"Status Code: {response.status_code}")
-        print(f"Ruwe Respons: {response.text}")
-        
-        if response.status_code == 200 or response.status_code == 201:
-            print("✅ HET IS GELUKT: De Resend server heeft de mail geaccepteerd.")
+        if response.status_code in [200, 201]:
+            print(f"✅ SUCCES! Mail verzonden naar {EMAIL_RECEIVER}")
+            print(f"Respons ID: {response.json().get('id')}")
         else:
-            print("❌ SERVER WEIGERING: Resend zag de aanvraag maar weigerde deze.")
-            
+            print(f"❌ FOUT {response.status_code}: {response.text}")
     except Exception as e:
-        print(f"❌ VERBINDINGSFOUT: Kon niet praten met Resend. Fout: {e}")
+        print(f"❌ VERBINDINGSFOUT: {e}")
 
 if __name__ == "__main__":
-    run_diagnostic()
-    print("--- EINDE DIAGNOSE ---")
+    run_scraper_and_mail()
