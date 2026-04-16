@@ -31,11 +31,10 @@ def get_ai_sorted_list(articles):
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(articles)]
     
     prompt = (
-        "Sorteer deze lijst voor een TV-professional. "
+        "Je bent een media-redacteur. Sorteer deze artikelen voor een TV-professional. "
         "PRIORITEIT 1: TV-recensies (Han Lips, Volkskrant, Trouw-kijkt) en 'Zap' of 'Kijkt' (NRC). "
-        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows, VI en mediacijfers (Tina Nijkamp). "
-        "Verwijder items die over cultuur gaan zonder TV-link (zoals boeken, theater, musea). "
-        "Geef ENKEL de JSON lijst met ID-nummers terug."
+        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows en media-experts (Tina Nijkamp). "
+        "Zet de meest relevante items bovenaan en geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
     
@@ -51,10 +50,8 @@ def run_scraper():
     all_found = []
     seen_links = set()
     
-    # VIP Recensenten & TV Termen
     CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
     TV_KEYWORDS = ['zap', 'kijkt', 'tv-recensie', 'televisie', 'tv-', 'talkshow', 'vandaag inside', 'mafs', 'npo', 'rtl', 'sbs', 'kijkcijfer', 'serie', 'uitzending', 'omroep']
-    OMROEPEN = ['avrotros', 'powned', 'bnnvara', 'kro-ncrv', 'omroep max', 'wnl', 'vpro', 'human', 'ntr', 'omroep zwart', 'eo']
 
     headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -78,38 +75,40 @@ def run_scraper():
 
                     keep = False
                     
-                    # --- DE EXTREEM STRENGE SECTIE-GRENDELS ---
+                    # --- DE HERSTELDE FILTER LOGICA ---
 
-                    # 1. PAROOL: Alleen de Han Lips sectie
-                    if name == "Parool" and "/han-lips" in link.lower():
-                        keep = True
+                    # 1. PAROOL: Alleen Han Lips
+                    if name == "Parool":
+                        if "han-lips" in link.lower() or "han lips" in title.lower():
+                            keep = True
                     
                     # 2. VOLKSKRANT: Alleen TV sectie
-                    elif name == "Volkskrant" and "/televisie" in link.lower():
-                        keep = True
-                    
-                    # 3. TELEGRAAF: Alleen Entertainment/Media
-                    elif name == "Telegraaf" and "/entertainment/media" in link.lower():
-                        keep = True
-                    
-                    # 4. TROUW: Sectie Cultuur-Media EN TV-trefwoord verplicht (om boeken/theater te lozen)
-                    elif name == "Trouw" and "/cultuur-media" in link.lower():
-                        if any(word in full_lower for word in ['tv', 'televisie', 'kijkt', 'serie', 'uitzending', 'omroep', 'presentator']):
+                    elif name == "Volkskrant":
+                        if "televisie" in link.lower() or "tv-recensie" in full_lower:
                             keep = True
                     
-                    # 5. NRC: Zap, Kijkt of VIP auteurs
-                    elif name == "NRC":
+                    # 3. TELEGRAAF: Alleen Media subsectie
+                    elif name == "Telegraaf":
+                        if "entertainment/media" in link.lower():
+                            keep = True
+                    
+                    # 4. TROUW: Cultuur-Media EN TV-kenmerk
+                    elif name == "Trouw":
+                        if "cultuur-media" in link.lower() or any(c in title.lower() for c in ['maaike bos', 'peereboom']):
+                            if any(word in full_lower for word in ['tv', 'televisie', 'kijkt', 'serie', 'omroep', 'presentator']):
+                                keep = True
+                    
+                    # 5. NRC & ALGEMEEN: Zoek naar Zap, Kijkt of VIP auteurs
+                    else:
                         if any(x in title.lower() for x in ['zap', 'kijkt']) or any(c in title.lower() for c in CRITICS):
                             keep = True
-
-                    # 6. FAILSAFE: Alleen bij expliciete media-VIPs
-                    if not keep:
-                        if any(critic in title.lower() for critic in CRITICS):
+                        elif any(word in title.lower() for word in ['talkshow', 'npo', 'kijkcijfer']):
                             keep = True
 
-                    # --- HARD BLOCK VOOR RUIS ---
-                    if any(bad in title.lower() for bad in ['gaza', 'soedan', 'pkn', 'oekraïne', 'israël', 'tentoonstelling', 'concertrecensie']):
-                        keep = False
+                    # --- BLOCK VOOR RUIS (Niet bij NRC/Parool recensies) ---
+                    if any(bad in title.lower() for bad in ['gaza', 'soedan', 'pkn', 'oekraïne', 'israël']):
+                        if not any(vip in title.lower() for vip in ['zap', 'lips', 'fortuin']):
+                            keep = False
 
                     if keep:
                         all_found.append({"title": title, "link": link, "source": name, "snippet": snippet})
