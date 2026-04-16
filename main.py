@@ -16,58 +16,70 @@ FEEDS = {
     "Telegraaf": "https://www.telegraaf.nl/rss"
 }
 
-def clean_text(raw_html):
-    """Schoont HTML op en pakt de eerste 25 woorden."""
-    if not raw_html:
-        return "Geen beschrijving beschikbaar."
-    # Verwijder HTML tags
-    clean = re.sub(r'<[^>]+?>', '', raw_html)
+def clean_text(text):
+    """Schoont tekst op, verwijdert HTML en CDATA rommel."""
+    if not text:
+        return ""
+    # Verwijder CDATA en HTML tags
+    text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
     # Verwijder overtollige witruimte
-    clean = " ".join(clean.split())
+    text = " ".join(text.split())
     # Pak de eerste 25 woorden
-    words = clean.split()
+    words = text.split()
     if len(words) > 25:
         return " ".join(words[:25]) + "..."
-    return clean
+    return text
 
 def run_scraper():
-    print("🚀 Scraper start (zonder AI)...")
+    print("🚀 Scraper start (focus op TV/Media)...")
     results = []
     seen_links = set()
     
-    # De vertrouwde keywords
-    KEYWORDS = ['lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'barend', 'borsato', 'vandaag inside', 'jinek', 'renze', 'beau', 'journalist', 'film', 'netflix', 'videoland']
+    # VEEL strengere selectie op TV/Media keywords
+    STRICT_KEYWORDS = [
+        'lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 
+        'nijkamp', 'talkshow', 'vandaag inside', 'jinek', 'renze', 'beau', 'presentator', 
+        'uitzending', 'programma', 'kijkcijfers', 'omroep', 'streaming', 'netflix', 'videoland'
+    ]
     
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=10)
-            # We splitsen de feed op items
             items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
             
             for item in items:
-                t_match = re.search(r'<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', item, re.DOTALL)
-                l_match = re.search(r'<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</link>', item, re.DOTALL)
-                d_match = re.search(r'<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>', item, re.DOTALL)
+                # Titel en Link
+                t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
+                l_match = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
                 
                 if t_match and l_match:
-                    title = re.sub('<[^<]+?>', '', t_match.group(1).strip())
+                    title = clean_text(t_match.group(1))
                     link = l_match.group(1).strip()
-                    description = d_match.group(1).strip() if d_match else ""
-
+                    
                     if link in seen_links: continue
 
-                    # Check of het over media gaat via keywords
-                    if any(k in (title + " " + description).lower() for k in KEYWORDS):
-                        snippet = clean_text(description)
+                    # Probeer beschrijving te vinden in verschillende velden (sommige kranten wisselen dit af)
+                    desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
+                    raw_desc = desc_match.group(1) if desc_match else ""
+                    snippet = clean_text(raw_desc)
+
+                    # FILTER: Moet een van de keywords bevatten
+                    if any(k in (title + " " + snippet).lower() for k in STRICT_KEYWORDS):
+                        # Extra check: sluit algemeen nieuws uit dat vaak per ongeluk 'media' bevat
+                        if any(x in title.lower() for x in ['sahel', 'toerisme', 'gaza', 'soedan']):
+                            continue
+
                         archive_link = f"https://archive.is/{link}"
                         
                         results.append(f"""
-                        <li style='margin-bottom: 25px; list-style: none; border-left: 3px solid #3498db; padding-left: 10px;'>
+                        <li style='margin-bottom: 25px; list-style: none; border-left: 3px solid #e67e22; padding-left: 12px;'>
                             <strong style='font-size: 16px; color: #2c3e50;'>[{name}] {title}</strong><br>
-                            <p style='margin: 8px 0; color: #555; font-size: 14px; line-height: 1.4;'>{snippet}</p>
-                            <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-weight: bold;'>🔓 Lees artikel via Archive.is</a>
+                            <p style='margin: 6px 0; color: #444; font-size: 14px; line-height: 1.5;'>
+                                {snippet if snippet else "<i>Geen intro beschikbaar in feed.</i>"}
+                            </p>
+                            <a href='{archive_link}' style='color: #e67e22; text-decoration: none; font-size: 13px; font-weight: bold;'>🔓 Lees artikel via Archive.is</a>
                         </li>""")
                         seen_links.add(link)
         except Exception as e:
@@ -79,32 +91,28 @@ if __name__ == "__main__":
     content = run_scraper()
     
     if not content:
-        content = "<p>Geen media-artikelen gevonden vandaag.</p>"
+        content = "<p style='color: #666;'>Geen specifieke TV-artikelen gevonden vandaag.</p>"
 
-    # Mail verzenden via Resend
     mail_payload = {
         "from": EMAIL_FROM,
         "to": [EMAIL_RECEIVER],
-        "subject": f"Media Update: {datetime.now().strftime('%d-%m')}",
+        "subject": f"TV & Media Update: {datetime.now().strftime('%d-%m')}",
         "html": f"""
         <html>
-            <body style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'>
-                <h2 style='color: #2c3e50;'>📺 Dagelijks Media Overzicht</h2>
-                <p style='color: #999; font-size: 12px;'>De eerste 25 woorden van elk artikel:</p>
-                <hr style='border: 0; border-top: 1px solid #eee;'>
+            <body style='font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'>
+                <h2 style='color: #e67e22; border-bottom: 2px solid #eee; padding-bottom: 10px;'>📺 TV & Media Overzicht</h2>
                 <ul style='padding: 0;'>{content}</ul>
+                <p style='color: #999; font-size: 11px; margin-top: 40px; border-top: 1px solid #eee; padding-top: 10px;'>
+                    Gefilterd op TV-relevante trefwoorden.
+                </p>
             </body>
         </html>
         """
     }
     
-    try:
-        r = requests.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json=mail_payload,
-            timeout=20
-        )
-        print(f"✅ Mail verzonden: {r.status_code}")
-    except Exception as e:
-        print(f"❌ Fout: {e}")
+    requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json=mail_payload,
+        timeout=20
+    )
