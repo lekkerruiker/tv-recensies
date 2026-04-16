@@ -24,28 +24,17 @@ def clean_text(text):
     return " ".join(words[:25]) + "..." if len(words) > 25 else text
 
 def run_scraper():
-    print("🚀 Scraper start (Scherpschutter Modus)...")
+    print("🚀 Scraper start (Recensie-Prioriteit)...")
     results = []
     seen_links = set()
     
-    # 1. VIP-Lijst: Deze namen duiden bijna altijd op een TV-recensie
-    VIP_CRITICS = ['lips:', 'fortuin:', 'peereboom:', 'maaike bos:', 'stokmans:', 'han lips']
+    # VIP: Als een van deze namen in de TITEL staat, is het bijna altijd een recensie.
+    CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
     
-    # 2. Harde TV-Keywords (moeten in titel of snippet staan)
-    HARD_TV = [
-        'tv-recensie', 'tv-column', 'kijkcijfers', 'vandaag inside', 'talkshow', 
-        'presentator', 'uitzending', 'npo 1', 'npo 2', 'npo 3', 'rtl 4', 'sbs 6',
-        'tina nijkamp', 'angela de jong', 'jinek', 'beau', 'renze', 'humberto'
-    ]
+    # TV Keywords (moeten gecombineerd worden met TV context)
+    TV_CORE = ['zap', 'kijkt', 'recensie', 'televisie', 'tv-', 'talkshow', 'vandaag inside', 'presentator', 'uitzending', 'npo', 'rtl', 'sbs']
 
-    # 3. Zachte Keywords (mogen alleen door als ze gecombineerd worden met TV-context)
-    SOFT_KEYWORDS = ['serie', 'omroep', 'netflix', 'videoland', 'documentaire', 'film']
-
-    # 4. Verboden Woorden (Uitsluiten van ruis)
-    FORBIDDEN = [
-        'omroepkoor', 'museum', 'concert', 'klimaat', 'beurs', 'sport', 'voetbal', 
-        'politiek', 'kamerlid', 'minister', 'oorlog', 'gaza', 'israël', 'oekraïne'
-    ]
+    FORBIDDEN = ['omroepkoor', 'klimaat', 'beurs', 'voetbaluitslagen', 'oorlog', 'gaza']
 
     headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -63,7 +52,7 @@ def run_scraper():
                     link = l_match.group(1).strip()
                     if link in seen_links: continue
 
-                    # Snippet ophalen
+                    # Haal tekst op
                     desc_content = ""
                     for tag in ['description', 'content:encoded', 'summary']:
                         d_match = re.search(f'<{tag}>(.*?)</{tag}>', item, re.DOTALL)
@@ -73,35 +62,35 @@ def run_scraper():
                     snippet = clean_text(desc_content)
                     full_lower = (title + " " + snippet).lower()
 
-                    # --- FILTER LOGICA ---
+                    # --- DE NIEUWE FILTER LOGICA ---
                     keep = False
                     
-                    # A. Check VIP Critics (Hoge prioriteit)
-                    if any(critic in title.lower() for critic in VIP_CRITICS):
+                    # 1. Is het een bekende recensent? (Hoge prioriteit)
+                    if any(critic in title.lower() for critic in CRITICS):
                         keep = True
                     
-                    # B. Check Harde TV Keywords
-                    if any(word in full_lower for word in HARD_TV):
+                    # 2. Bevat het een 'Harde' TV term in de titel?
+                    if any(word in title.lower() for word in ['zap', 'recensie', 'tv-column', 'kijkt']):
                         keep = True
-                        
-                    # C. Check Zachte Keywords (alleen als titel ook 'televisie' of 'kijkt' bevat)
-                    if any(soft in full_lower for soft in SOFT_KEYWORDS):
-                        if any(tv in full_lower for tv in ['tv', 'televisie', 'kijkt', 'scherm', 'streamen']):
+
+                    # 3. Bevat de tekst TV-context?
+                    if any(word in full_lower for word in TV_CORE):
+                        # Alleen als het niet over verboden onderwerpen gaat
+                        if not any(f in full_lower for f in FORBIDDEN):
                             keep = True
 
-                    # D. Harde Uitsluiting (Zelfs als een keyword matcht, gooi weg bij ruis)
-                    if any(forbidden in full_lower for forbidden in FORBIDDEN):
-                        # Uitzondering: als het over een talkshow gaat, mag het wel
-                        if not any(ts in full_lower for ts in ['talkshow', 'vandaag inside', 'op1']):
+                    # Extra check: Forceer uitsluiting bij ruis, behalve voor VIP recensenten
+                    if any(f in full_lower for f in FORBIDDEN):
+                        if not any(critic in title.lower() for critic in CRITICS):
                             keep = False
 
                     if keep:
                         archive_link = f"https://archive.is/{link}"
                         results.append(f"""
-                        <li style='margin-bottom: 20px; list-style: none; border-left: 4px solid #e67e22; padding-left: 12px;'>
+                        <li style='margin-bottom: 22px; list-style: none; border-left: 4px solid #3498db; padding-left: 12px;'>
                             <strong style='font-size: 16px; color: #2c3e50;'>[{name}] {title}</strong><br>
-                            <p style='margin: 4px 0; color: #444; font-size: 14px;'>{snippet if snippet else "<i>Geen intro.</i>"}</p>
-                            <a href='{archive_link}' style='color: #e67e22; text-decoration: none; font-size: 13px; font-weight: bold;'>🔓 Lees artikel</a>
+                            <p style='margin: 6px 0; color: #444; font-size: 14px;'>{snippet if snippet else "<i>Geen intro.</i>"}</p>
+                            <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-size: 13px; font-weight: bold;'>🔓 Lees recensie</a>
                         </li>""")
                         seen_links.add(link)
         except:
@@ -111,16 +100,22 @@ def run_scraper():
 
 if __name__ == "__main__":
     content = run_scraper()
-    if not content:
-        content = "<li>Geen specifieke TV-recensies of media-items gevonden vandaag.</li>"
-
+    
+    # Altijd mailen
     requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         json={
             "from": EMAIL_FROM,
             "to": [EMAIL_RECEIVER],
-            "subject": f"TV Focus: {datetime.now().strftime('%d-%m')}",
-            "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;'><h2>📺 TV & Media Focus</h2><ul>{content}</ul></body></html>"
+            "subject": f"TV Recensies & Media: {datetime.now().strftime('%d-%m')}",
+            "html": f"""
+            <html>
+                <body style='font-family:sans-serif;max-width:650px;margin:0 auto;padding:20px;'>
+                    <h2 style='color: #2980b9; border-bottom: 2px solid #eee; padding-bottom: 10px;'>📺 Dagelijkse TV Selectie</h2>
+                    <ul style='padding: 0;'>{content if content else "<li>Vandaag geen recensies gevonden.</li>"}</ul>
+                </body>
+            </html>
+            """
         }
     )
