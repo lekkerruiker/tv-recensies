@@ -18,35 +18,37 @@ FEEDS = {
     "Telegraaf": "https://www.telegraaf.nl/rss"
 }
 
-def get_gemini_summary(title, source):
-    """Haalt samenvatting op of geeft None bij weigering/fout."""
-    if not GEMINI_KEY: return None
+def get_gemini_summary(title):
+    """Directe en simpele aanroep naar Gemini."""
+    if not GEMINI_KEY: return "AI Sleutel mist."
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    prompt = (
-        f"Titel: {title}. Bron: {source}. "
-        "Vat dit artikel over media/TV kort samen in 1 zin Nederlands. "
-        "Als het echt niet over media gaat, antwoord alleen met 'REJECT'."
-    )
+    
+    # We vragen de AI om HEEL simpel te antwoorden
+    prompt = f"Vat deze krantentitel kort samen in het Nederlands: '{title}'. Als het niet over media/TV/cultuur gaat, antwoord dan met het woord REJECT."
+    
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
     try:
-        # Iets kortere pauze, maar wel aanwezig
-        time.sleep(0.5)
-        response = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
-        if response.status_code == 200:
-            text = response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-            return None if "REJECT" in text.upper() else text
-    except:
-        pass
-    return None
+        # De gratis tier heeft rust nodig
+        time.sleep(2)
+        resp = requests.post(url, json=payload, timeout=10)
+        data = resp.json()
+        
+        # De meest directe manier om de tekst te pakken
+        tekst = data['candidates'][0]['content']['parts'][0]['text'].strip()
+        return tekst
+    except Exception as e:
+        print(f"AI Fout voor {title[:20]}: {e}")
+        return "Geen samenvatting beschikbaar."
 
 def run_scraper():
     print("🚀 Scraper start...")
     results = []
     seen_links = set()
     
-    # Uitgebreide lijst keywords
-    KEYWORDS = ['lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'barend', 'borsato', 'vandaag inside', 'jinek', 'renze', 'beau', 'journalist', 'presentator']
+    # Brede lijst keywords om artikelen te vangen
+    KEYWORDS = ['lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'borsato', 'vandaag inside', 'jinek', 'renze', 'beau', 'journalist', 'film', 'netflix', 'videoland']
     
     headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -65,26 +67,20 @@ def run_scraper():
 
                     if link in seen_links: continue
 
-                    # STAP 1: Keyword check
-                    if any(k in (title + " " + link).lower() for k in KEYWORDS):
-                        # STAP 2: Probeer AI
-                        summary = get_gemini_summary(title, name)
+                    # Alleen verwerken als keyword matcht
+                    if any(k in title.lower() for k in KEYWORDS):
+                        summary = get_gemini_summary(title)
                         
-                        # STAP 3: Fallback - Als AI 'REJECT' zegt maar het keyword is erg sterk, sturen we het TOCH door
-                        if not summary:
-                            # Alleen doorsturen zonder samenvatting als het keyword echt 'media-achtig' is
-                            strong_keywords = ['sonja', 'borsato', 'recensie', 'televisie', 'tv-', 'vandaag inside']
-                            if any(sk in title.lower() for sk in strong_keywords):
-                                summary = "Nieuwsbericht over media/TV."
-                            else:
-                                continue
+                        # Alleen REJECT als de AI dat expliciet zegt
+                        if "REJECT" in summary.upper() and len(summary) < 10:
+                            continue
 
                         archive_link = f"https://archive.is/{link}"
                         results.append(f"""
-                        <li style='margin-bottom: 20px; list-style: none; border-left: 3px solid #e67e22; padding-left: 10px;'>
+                        <li style='margin-bottom: 20px; list-style: none; border-left: 3px solid #3498db; padding-left: 10px;'>
                             <strong style='color: #2c3e50;'>[{name}] {title}</strong><br>
-                            <p style='margin: 5px 0; color: #666; font-size: 14px;'>{summary}</p>
-                            <a href='{archive_link}' style='color: #e67e22; font-size: 13px;'>🔓 Lees artikel</a>
+                            <p style='margin: 5px 0; color: #555; font-size: 14px;'>{summary}</p>
+                            <a href='{archive_link}' style='color: #3498db;'>🔓 Lees artikel</a>
                         </li>""")
                         seen_links.add(link)
         except:
@@ -93,21 +89,21 @@ def run_scraper():
     return "".join(results)
 
 if __name__ == "__main__":
-    articles_html = run_scraper()
+    content = run_scraper()
     
-    # We forceren een resultaat voor de test
-    if not articles_html:
-        subject = f"Media Update [GEEN NIEUWS]: {datetime.now().strftime('%d-%m')}"
-        body = "<p>Geen nieuwe artikelen gevonden in de RSS-feeds met de huidige trefwoorden.</p>"
-    else:
-        subject = f"Media Update: {datetime.now().strftime('%d-%m')}"
-        body = f"<ul style='padding: 0;'>{articles_html}</ul>"
+    if not content:
+        content = "<p>Geen media-artikelen gevonden vandaag.</p>"
 
-    # Verzenden
+    # Mail verzenden
     requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json={"from": EMAIL_FROM, "to": [EMAIL_RECEIVER], "subject": subject, "html": f"<html><body>{body}</body></html>"},
+        json={
+            "from": EMAIL_FROM, 
+            "to": [EMAIL_RECEIVER], 
+            "subject": f"Media Update: {datetime.now().strftime('%d-%m')}", 
+            "html": f"<html><body><h2>📺 Media Update</h2>{content}</body></html>"
+        },
         timeout=20
     )
     print("✅ Klaar.")
