@@ -1,30 +1,11 @@
-name: Dagelijkse Recensies
-on:
-  schedule:
-    - cron: '0 8 * * *' # Elke ochtend om 08:00
-  workflow_dispatch: # Zodat je hem handmatig kunt testen
-
-jobs:
-  stuur-recensies:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Code ophalen
-        uses: actions/checkout@v4 # Geüpdatet naar v4
-
-      - name: Python instellen
-        uses: actions/setup-python@v5 # Geüpdatet naar v5
-        with:
-          python-version: '3.11'
-
+# ... (rest van de file blijft hetzelfde tot aan 'Dependencies installeren')
       - name: Dependencies installeren
         run: |
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 resend # Voeg resend hier toe
 
       - name: Script draaien
         env:
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: python main.py
