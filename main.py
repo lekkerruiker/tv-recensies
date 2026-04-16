@@ -31,33 +31,39 @@ def get_reviews():
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
-            # We gebruiken BeautifulSoup om de ruwe XML-tekst te doorzoeken
+            # We laden de ruwe content in BeautifulSoup
             soup = BeautifulSoup(resp.content, 'html.parser')
             items = soup.find_all('item')
             
             for item in items:
-                # We pakken de inhoud van de tags handmatig om parser-fouten te omzeilen
+                # TITEL VINDEN: We proberen 3 methodes voor maximale kans op tekst
                 title = ""
                 if item.title:
+                    # Methode 1: Directe tekst (voor Parool/Telegraaf)
                     title = item.title.get_text(strip=True)
+                    # Methode 2: Als methode 1 leeg is, kijk naar de 'next_sibling' (voor CDATA blokken)
+                    if not title and item.title.string:
+                        title = item.title.string.strip()
                 
-                # De link is lastig in HTML-parsers, we proberen verschillende methodes
+                # LINK VINDEN
                 link = ""
+                # We zoeken eerst naar de tekst in de link tag
                 if item.link:
-                    link = item.link.next_sibling.strip() if item.link.next_sibling else item.link.get_text(strip=True)
+                    link = item.link.get_text(strip=True)
+                # Als dat niet werkt, proberen we de GUID
+                if not link and item.find('guid'):
+                    link = item.find('guid').get_text(strip=True)
                 
-                # Als dat niet werkt (vaak bij NRC/VK), pakken we de GUID of de ruwe tekst
-                if not link or len(link) < 10:
-                    guid = item.find('guid')
-                    if guid:
-                        link = guid.get_text(strip=True)
-
-                if not title or not link or not link.startswith('http'):
+                # De "Vibe-Check": als we nog steeds geen link hebben, is het item onbruikbaar
+                if not link or not link.startswith('http'):
                     continue
+                
+                # Als de titel nog steeds leeg is, gebruiken we een deel van de URL als nood-titel
+                if not title:
+                    title = link.split('/')[-1].replace('-', ' ').replace('.html', '').capitalize()
 
                 combined_text = (title + " " + link).lower()
                 if any(k in combined_text for k in KEYWORDS):
-                    # Unieke check
                     if not any(link in r for r in results):
                         archive_link = f"https://archive.is/{link}"
                         results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
@@ -69,7 +75,7 @@ def get_reviews():
 
 def send_mail(content):
     if not content:
-        content = "<li>Geen nieuwe recensies gevonden.</li>"
+        content = "<li>Geen nieuwe recensies gevonden vandaag.</li>"
 
     html_body = f"""
     <html>
