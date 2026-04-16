@@ -15,7 +15,8 @@ FEEDS = {
     "Volkskrant": "https://www.volkskrant.nl/rss.xml",
     "Trouw": "https://www.trouw.nl/rss.xml",
     "Parool": "https://www.parool.nl/rss.xml",
-    "Telegraaf": "https://www.telegraaf.nl/rss"
+    "Telegraaf": "https://www.telegraaf.nl/rss",
+    "AD": "https://www.ad.nl/rss.xml"
 }
 
 def clean_text(text):
@@ -32,9 +33,9 @@ def get_ai_sorted_list(articles):
     
     prompt = (
         "Sorteer deze media-artikelen voor een TV-professional. "
-        "PRIORITEIT 1: TV-recensies (Maaike Bos, Han Lips, Volkskrant) en 'Zap'/'Kijkt' (NRC). "
-        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows en Tina Nijkamp. "
-        "Verwijder alles wat niet direct met TV te maken heeft. "
+        "PRIORITEIT 1: TV-recensies (Maaike Bos, Han Lips, Volkskrant-recensie) en 'Zap'/'Kijkt' (NRC). "
+        "PRIORITEIT 2: Hard nieuws over de TV-sector van AD, Telegraaf, NPO, RTL, SBS en Tina Nijkamp. "
+        "Verwijder alles wat niet direct met TV/Media te maken heeft (zoals sport of algemeen entertainment). "
         "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
@@ -51,8 +52,8 @@ def run_scraper():
     all_found = []
     seen_links = set()
     
-    # VIP namen (nu ook expliciet Maaike Bos voor Trouw)
-    CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
+    # VIP namen (Angela verwijderd)
+    CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp']
 
     headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -76,26 +77,27 @@ def run_scraper():
 
                     keep = False
                     
-                    # --- DE NIEUWE STRENGE LOGICA ---
+                    # --- DE GEFILTERDE LOGICA ---
 
-                    # 1. TROUW: Exclusief Maaike Bos (harde eis)
-                    if name == "Trouw":
+                    # 1. AD: Puur op sectie-basis
+                    if name == "AD":
+                        if "tv-en-radio" in link.lower():
+                            keep = True
+
+                    # 2. TROUW: Blijft exclusief Maaike Bos
+                    elif name == "Trouw":
                         if "maaike bos" in full_lower:
                             keep = True
                     
-                    # 2. PAROOL: Alleen Han Lips
-                    elif name == "Parool" and "han-lips" in link.lower():
-                        keep = True
-                    
-                    # 3. VOLKSKRANT: Alleen TV sectie
-                    elif name == "Volkskrant" and "televisie" in link.lower():
-                        keep = True
+                    # 3. PAROOL & VOLKSKRANT: Sectie-grendels
+                    elif name == "Parool" and "han-lips" in link.lower(): keep = True
+                    elif name == "Volkskrant" and "televisie" in link.lower(): keep = True
                     
                     # 4. TELEGRAAF: Alleen Media sectie
                     elif name == "Telegraaf" and "entertainment/media" in link.lower():
                         keep = True
                     
-                    # 5. NRC & OVERIG: Zap, Kijkt of VIP auteurs
+                    # 5. NRC & OVERIG: Zap, Kijkt of resterende VIP auteurs
                     else:
                         if any(x in title.lower() for x in ['zap', 'kijkt']) or any(c in title.lower() for c in CRITICS):
                             keep = True
@@ -133,7 +135,4 @@ if __name__ == "__main__":
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         json={
             "from": EMAIL_FROM, "to": [EMAIL_RECEIVER],
-            "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}",
-            "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'><h2>📺 TV & Media Overzicht</h2><ul style='padding:0;'>{content}</ul></body></html>"
-        }
-    )
+            "
