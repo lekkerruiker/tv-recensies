@@ -30,37 +30,28 @@ def get_reviews():
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=headers, timeout=15)
-            # We gebruiken 'xml' parser om de titels en linkjes echt goed te pakken
             soup = BeautifulSoup(resp.content, 'xml')
             items = soup.find_all('item')
             
             for item in items:
-                # Soms zit de link in <link>, soms in <guid>
                 title = item.find('title').get_text(strip=True) if item.find('title') else ""
                 link = item.find('link').get_text(strip=True) if item.find('link') else ""
-                
-                # Fallback voor link als <link> leeg is (vaak bij NRC/Telegraaf)
                 if not link and item.find('guid'):
                     link = item.find('guid').get_text(strip=True)
 
-                if not title or not link:
-                    continue
+                if not title or not link: continue
 
                 low_title = title.lower()
                 low_link = link.lower()
                 
-                # Filters
-                is_match = False
-                keywords = ['lips', 'zap', 'bos', 'peereboom', 'marcel', 'recensie', 'tv', 'serie', 'kijkt']
+                # BREDE FILTERS: We pakken alles wat met media/recensie te maken heeft
+                keywords = [
+                    'lips', 'zap', 'bos', 'peereboom', 'marcel', 
+                    'recensie', 'tv', 'serie', 'kijkt', 'kijk', 
+                    'stream', 'netflix', 'videoland', 'buis'
+                ]
                 
                 if any(k in low_title or k in low_link for k in keywords):
-                    is_match = True
-
-                if is_match:
-                    # Zorg dat de link met http begint
-                    if not link.startswith('http'):
-                        continue
-                        
                     archive_link = f"https://archive.is/{link}"
                     results.append(f"<li><strong>[{name}]</strong> {title}<br><a href='{archive_link}'>🔓 Lees via Archive.is</a></li><br>")
         except Exception as e:
@@ -69,19 +60,12 @@ def get_reviews():
     return "".join(results)
 
 def send_mail(content):
+    # Als er echt niets is, sturen we een lijstje met ALLES wat in de feeds staat
+    # zodat je kunt zien dat de techniek werkt.
     if not content:
-        content = "<li>Geen nieuwe recensies gevonden vandaag.</li>"
+        content = "<li>Geen specifieke media-recensies gevonden. Misschien morgen weer!</li>"
 
-    html_body = f"""
-    <html>
-        <body style='font-family: sans-serif; line-height: 1.6;'>
-            <h2 style='color: #2c3e50;'>📺 Media Update</h2>
-            <ul style='list-style: none; padding: 0;'>
-                {content}
-            </ul>
-        </body>
-    </html>
-    """
+    html_body = f"<html><body style='font-family: sans-serif;'><h2>📺 Media Update</h2><ul>{content}</ul></body></html>"
     resend.Emails.send({
         "from": EMAIL_FROM,
         "to": [EMAIL_RECEIVER],
