@@ -19,54 +19,40 @@ FEEDS = {
 }
 
 def get_gemini_summary(title, source):
-    if not GEMINI_KEY:
-        return "REJECT"
+    """Haalt samenvatting op of geeft None bij weigering/fout."""
+    if not GEMINI_KEY: return None
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    
-    # We geven de AI nu de opdracht om BREDE media-interesses te accepteren
     prompt = (
-        f"Je bent een media-expert. Analyseer deze titel: '{title}' (Bron: {source}).\n"
-        "VRAAG: Gaat dit over televisie, streaming (Netflix/Videoland), radio, BN'ers, journalistiek, "
-        "podcasts of de invloed van media? \n"
-        "- Als het JA is (of zelfs een beetje gerelateerd): Schrijf 1 vlotte samenvatting van max 15 woorden in het Nederlands.\n"
-        "- Als het ECHT NIET over media gaat (zoals natuur, buitenlands beleid, sport zonder media-link): Antwoord met alleen het woord REJECT."
+        f"Titel: {title}. Bron: {source}. "
+        "Vat dit artikel over media/TV kort samen in 1 zin Nederlands. "
+        "Als het echt niet over media gaat, antwoord alleen met 'REJECT'."
     )
     
-    headers = {'Content-Type': 'application/json'}
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    
     try:
-        time.sleep(1) # Voorkom rate limit
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        
+        # Iets kortere pauze, maar wel aanwezig
+        time.sleep(0.5)
+        response = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            if 'candidates' in data and data['candidates']:
-                text = data['candidates'][0]['content']['parts'][0]['text'].strip()
-                # Debugging: we printen de beslissing in de GitHub logs
-                print(f"AI Check: '{title[:30]}...' -> {text[:20]}")
-                return text
-        return "REJECT"
+            text = response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            return None if "REJECT" in text.upper() else text
     except:
-        return "REJECT"
+        pass
+    return None
 
 def run_scraper():
     print("🚀 Scraper start...")
     results = []
+    seen_links = set()
     
-    # We breiden de keywords uit zodat er meer naar de AI wordt gestuurd
-    KEYWORDS = [
-        'lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 
-        'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'barend', 'borsato', 
-        'vandaag inside', 'jinek', 'renze', 'beau', 'journalist', 'cultuur', 
-        'film', 'programma', 'presentator', 'uitzending', 'nieuwsbericht'
-    ]
+    # Uitgebreide lijst keywords
+    KEYWORDS = ['lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'barend', 'borsato', 'vandaag inside', 'jinek', 'renze', 'beau', 'journalist', 'presentator']
+    
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     for name, url in FEEDS.items():
         try:
-            resp = requests.get(url, headers=headers, timeout=15)
+            resp = requests.get(url, headers=headers, timeout=10)
             items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
             
             for item in items:
@@ -77,52 +63,51 @@ def run_scraper():
                     title = re.sub('<[^<]+?>', '', t_match.group(1).strip())
                     link = l_match.group(1).strip()
 
-                    # Check trefwoorden (stap 1)
+                    if link in seen_links: continue
+
+                    # STAP 1: Keyword check
                     if any(k in (title + " " + link).lower() for k in KEYWORDS):
-                        # Laat AI beslissen (stap 2)
+                        # STAP 2: Probeer AI
                         summary = get_gemini_summary(title, name)
                         
-                        if "REJECT" not in summary.upper():
-                            archive_link = f"https://archive.is/{link}"
-                            results.append(f"""
-                            <li style='margin-bottom: 25px; list-style: none; border-left: 4px solid #e67e22; padding-left: 15px;'>
-                                <strong style='font-size: 16px; color: #2c3e50;'>[{name}] {title}</strong><br>
-                                <p style='margin: 8px 0; color: #444; font-size: 14px;'>{summary}</p>
-                                <a href='{archive_link}' style='color: #e67e22; text-decoration: none; font-weight: bold;'>🔓 Lees artikel</a>
-                            </li>""")
-        except Exception as e:
-            print(f"⚠️ Fout bij {name}: {e}")
+                        # STAP 3: Fallback - Als AI 'REJECT' zegt maar het keyword is erg sterk, sturen we het TOCH door
+                        if not summary:
+                            # Alleen doorsturen zonder samenvatting als het keyword echt 'media-achtig' is
+                            strong_keywords = ['sonja', 'borsato', 'recensie', 'televisie', 'tv-', 'vandaag inside']
+                            if any(sk in title.lower() for sk in strong_keywords):
+                                summary = "Nieuwsbericht over media/TV."
+                            else:
+                                continue
+
+                        archive_link = f"https://archive.is/{link}"
+                        results.append(f"""
+                        <li style='margin-bottom: 20px; list-style: none; border-left: 3px solid #e67e22; padding-left: 10px;'>
+                            <strong style='color: #2c3e50;'>[{name}] {title}</strong><br>
+                            <p style='margin: 5px 0; color: #666; font-size: 14px;'>{summary}</p>
+                            <a href='{archive_link}' style='color: #e67e22; font-size: 13px;'>🔓 Lees artikel</a>
+                        </li>""")
+                        seen_links.add(link)
+        except:
+            continue
             
     return "".join(results)
 
 if __name__ == "__main__":
     articles_html = run_scraper()
     
-    # Onderwerp en inhoud bepalen
+    # We forceren een resultaat voor de test
     if not articles_html:
         subject = f"Media Update [GEEN NIEUWS]: {datetime.now().strftime('%d-%m')}"
-        body_content = "<p>Vandaag geen specifieke media-artikelen gevonden in de geselecteerde feeds.</p>"
+        body = "<p>Geen nieuwe artikelen gevonden in de RSS-feeds met de huidige trefwoorden.</p>"
     else:
         subject = f"Media Update: {datetime.now().strftime('%d-%m')}"
-        body_content = f"<ul style='padding: 0;'>{articles_html}</ul>"
+        body = f"<ul style='padding: 0;'>{articles_html}</ul>"
 
-    # Verzend mail via Resend
-    mail_url = "https://api.resend.com/emails"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "from": EMAIL_FROM,
-        "to": [EMAIL_RECEIVER],
-        "subject": subject,
-        "html": f"""
-        <html>
-            <body style='font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; max-width: 600px; padding: 20px;'>
-                <h2 style='color: #e67e22;'>📺 Media & TV Update</h2>
-                <hr style='border: 1px solid #eee;'>
-                {body_content}
-            </body>
-        </html>
-        """
-    }
-    
-    r = requests.post(mail_url, headers=headers, json=payload, timeout=20)
-    print(f"✅ Klaar. Mail status: {r.status_code}")
+    # Verzenden
+    requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json={"from": EMAIL_FROM, "to": [EMAIL_RECEIVER], "subject": subject, "html": f"<html><body>{body}</body></html>"},
+        timeout=20
+    )
+    print("✅ Klaar.")
