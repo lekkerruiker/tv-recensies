@@ -11,7 +11,7 @@ EMAIL_FROM = os.getenv("EMAIL_FROM", "onboarding@resend.dev")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 
 if not API_KEY or not EMAIL_RECEIVER:
-    print("❌ FOUT: Mis gegevens.")
+    print("❌ FOUT: Mis gegevens in Secrets.")
     sys.exit(1)
 
 resend.api_key = API_KEY
@@ -26,57 +26,64 @@ SOURCES = {
 
 def get_reviews():
     results = []
+    debug_info = ""
+    # Nog zwaardere vermomming
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8',
     }
     
     for name, url in SOURCES.items():
         try:
             print(f"--- {name} ---")
             resp = requests.get(url, headers=headers, timeout=15)
-            print(f"Status: {resp.status_code}")
+            status = resp.status_code
+            print(f"Status: {status}")
+            debug_info += f"{name}: Status {status}<br>"
             
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # We pakken ELKE link en kijken of er bekende patronen in zitten
-            for link in soup.find_all('a', href=True):
-                href = link['href'].lower()
-                text = link.get_text(strip=True)
+            if status == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                links = soup.find_all('a', href=True)
+                print(f"Links gevonden: {len(links)}")
                 
-                # Zeer brede filters gebaseerd op jouw voorbeelden
-                match = False
-                if name == "NRC" and ("/2026/" in href or "zap" in href): match = True
-                if name == "Volkskrant" and ("~b" in href or "televisie" in href): match = True # VK gebruikt vaak ~b codes
-                if name == "Trouw" and ("bos" in href or "cultuur-media" in href): match = True
-                if name == "Parool" and ("lips" in href or "kijkt-tv" in href): match = True
-                if name == "Telegraaf" and ("marcel" in href or "media" in href): match = True
-
-                if match and len(text) > 10:
-                    full_url = href if href.startswith('http') else f"https://www.{name.lower()}.nl{href}"
-                    if "telegraaf" in name.lower() and not full_url.startswith('http'): full_url = "https://www.telegraaf.nl" + href
+                for link in links:
+                    href = link['href'].lower()
+                    text = link.get_text(strip=True)
                     
-                    if full_url not in [r[1] for r in results]: # Voorkom dubbelen
-                        results.append((name, full_url, text))
-            
-            print(f"Gevonden: {len(results)}")
+                    # Ultre-brede match
+                    is_match = False
+                    if name == "NRC" and ("zap" in href or "/2026/" in href): is_match = True
+                    if name == "Volkskrant" and ("televisie" in href or "recensie" in href.lower()): is_match = True
+                    if name == "Trouw" and ("bos" in href or "media" in href): is_match = True
+                    if name == "Parool" and ("lips" in href or "kijkt-tv" in href): is_match = True
+                    if name == "Telegraaf" and ("marcel" in href or "media" in href): is_match = True
+
+                    if is_match and len(text) > 8:
+                        full_url = href if href.startswith('http') else f"https://www.{name.lower()}.nl{href.lstrip('/')}"
+                        if full_url not in [r[1] for r in results]:
+                            results.append((name, full_url, text))
+            else:
+                debug_info += f"  (Blokkade bij {name}!)<br>"
         except Exception as e:
             print(f"Fout: {e}")
+            debug_info += f"{name}: Fout {str(e)[:50]}<br>"
             
-    # Maak HTML van de resultaten
+    # Mail content opbouwen
     html = ""
-    for r_name, r_url, r_text in results[:15]: # Max 15 links totaal
-        archive = f"https://archive.is/{r_url}"
-        html += f"<li><strong>[{r_name}]</strong> {r_text}<br><a href='{archive}'>Lees via Archive</a></li><br>"
+    if results:
+        for r_name, r_url, r_text in results[:20]:
+            archive = f"https://archive.is/{r_url}"
+            html += f"<li><strong>[{r_name}]</strong> {r_text}<br><a href='{archive}'>Lees via Archive</a></li><br>"
+    else:
+        html = f"<li>Niets gevonden.</li><p>Debug Log:<br>{debug_info}</p>"
+    
     return html
 
 def send_mail(content):
-    if not content:
-        content = "<li>Helaas, nog steeds niets. Check de GitHub Logs voor de 'Status' codes per krant.</li>"
-
     resend.Emails.send({
         "from": EMAIL_FROM,
         "to": [EMAIL_RECEIVER],
-        "subject": f"Media Update: {datetime.now().strftime('%d-%m')}",
+        "subject": f"Media Debug Update: {datetime.now().strftime('%H:%M')}",
         "html": f"<html><body><h3>Resultaten:</h3><ul>{content}</ul></body></html>"
     })
 
