@@ -2,9 +2,11 @@ import os
 import requests
 import re
 from datetime import datetime
+import json
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
@@ -19,29 +21,43 @@ FEEDS = {
 def clean_text(text):
     if not text: return ""
     text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
-    text = " ".join(text.split())
-    words = text.split()
-    return " ".join(words[:25]) + "..." if len(words) > 25 else text
+    return " ".join(text.split())
+
+def get_ai_sorted_list(articles):
+    if not GEMINI_KEY or not articles:
+        return articles
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(articles)]
+    
+    prompt = (
+        "Sorteer deze lijst met media-artikelen voor een TV-professional. "
+        "PRIORITEIT 1: TV-recensies (Volkskrant) en 'Zap' (NRC). Dit zijn de belangrijkste dagelijkse stukken. "
+        "PRIORITEIT 2: Nieuws over NPO, RTL, SBS, talkshows en presentatoren. "
+        "Zet de belangrijkste items bovenaan en geef ENKEL de JSON lijst met ID-nummers terug in de nieuwe volgorde. "
+        f"Lijst: {json.dumps(input_data)}"
+    )
+    
+    try:
+        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
+        raw_response = resp.json()['candidates'][0]['content']['parts'][0]['text']
+        ids = json.loads(re.search(r'\[.*\]', raw_response).group())
+        return [articles[i] for i in ids if i < len(articles)]
+    except:
+        return articles
 
 def run_scraper():
-    print("🚀 Scraper start (Focus op het Scherm)...")
-    results = []
+    all_found = []
     seen_links = set()
     
-    # 1. VIP Recensenten (ALTIJD raak)
-    CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
+    # 1. VIP Auteurs (NRC & overig)
+    CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
     
-    # 2. Harde TV-Termen (Directe match)
-    HARD_TV = [
-        'zap', 'kijkt', 'tv-recensie', 'televisie', 'tv-', 'talkshow', 'vandaag inside', 
-        'mafs', 'npo', 'rtl', 'sbs', 'kijkcijfers', 'presentator', 'uitzending', 'omroep'
-    ]
-
-    # 3. Omroepen (Directe match)
+    # 2. Harde TV-Keywords
+    TV_KEYWORDS = ['zap', 'kijkt', 'tv-recensie', 'televisie', 'tv-', 'talkshow', 'vandaag inside', 'mafs', 'npo', 'rtl', 'sbs']
+    
+    # 3. Omroepen
     OMROEPEN = ['avrotros', 'powned', 'bnnvara', 'kro-ncrv', 'omroep max', 'wnl', 'vpro', 'human', 'ntr', 'omroep zwart', 'eo']
-
-    # 4. Streaming (Alleen als het specifiek over de dienst/serie gaat)
-    STREAMING = ['netflix', 'videoland', 'hbomax', 'disney+', 'viaplay', 'prime video', 'npo start']
 
     headers = {'User-Agent': 'Mozilla/5.0'}
 
@@ -59,68 +75,64 @@ def run_scraper():
                     link = l_match.group(1).strip()
                     if link in seen_links: continue
 
-                    desc_content = ""
-                    for tag in ['description', 'content:encoded', 'summary']:
-                        d_match = re.search(f'<{tag}>(.*?)</{tag}>', item, re.DOTALL)
-                        if d_match:
-                            desc_content = d_match.group(1)
-                            break
-                    snippet = clean_text(desc_content)
-                    full_lower = (title + " " + snippet).lower()
+                    desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
+                    snippet = clean_text(desc_match.group(1)) if desc_match else ""
+                    full_lower = (title + " " + snippet + " " + link).lower()
 
-                    # --- DE NIEUWE FOCUS-FILTER ---
                     keep = False
                     
-                    # A. Check URL Sectie (Strenge selectie)
-                    if any(path in link.lower() for path in ['/televisie', '/media']):
+                    # --- DE VIP & STRENGE FILTER ---
+                    
+                    # VIP CHECK 1: De Volkskrant Recensie (Ongeacht auteur)
+                    # We herkennen deze aan de URL-sectie '/televisie' of de term 'tv-recensie' bij de VK
+                    if name == "Volkskrant" and ('/televisie' in link.lower() or 'tv-recensie' in full_lower):
                         keep = True
                     
-                    # B. Check bekende recensenten
-                    if any(critic in title.lower() for critic in CRITICS):
+                    # VIP CHECK 2: Bekende recensenten (NRC Lips/Fortuin etc)
+                    elif any(critic in title.lower() for critic in CRITICS):
                         keep = True
                     
-                    # C. Check Harde TV termen
-                    if any(term in full_lower for term in HARD_TV):
+                    # VIP CHECK 3: NRC Zap (Altijd prio)
+                    elif name == "NRC" and 'zap' in title.lower():
                         keep = True
-                    
-                    # D. Check Omroepen
-                    if any(omroep in full_lower for omroep in OMROEPEN):
-                        keep = True
-                    
-                    # E. Check Streaming (alleen als titel ook 'serie' of 'kijkt' bevat)
-                    if any(s in full_lower for s in STREAMING):
-                        if any(x in full_lower for x in ['serie', 'kijkt', 'seizoen', 'aflevering']):
+
+                    # REGULIER FILTER: Alleen als het echt over TV gaat
+                    elif any(word in full_lower for word in TV_KEYWORDS):
+                        if any(o in full_lower for o in OMROEPEN) or any(tv in title.lower() for tv in ['tv', 'televisie', 'kijkt']):
                             keep = True
 
-                    # EXTRA: Gooi algemene film- en kunstberichten eruit die per ongeluk 'omroep' of 'kijkt' bevatten
-                    if 'film' in full_lower and not any(x in full_lower for x in ['tv', 'televisie', 'npo', 'rtl', 'sbs', 'stream']):
-                        if not any(critic in title.lower() for critic in CRITICS):
-                            keep = False
-
                     if keep:
-                        archive_link = f"https://archive.is/{link}"
-                        results.append(f"""
-                        <li style='margin-bottom: 22px; list-style: none; border-left: 3px solid #e67e22; padding-left: 12px;'>
-                            <strong style='font-size: 16px; color: #2c3e50;'>[{name}] {title}</strong><br>
-                            <p style='margin: 6px 0; color: #444; font-size: 14px;'>{snippet if snippet else "<i>Geen intro beschikbaar.</i>"}</p>
-                            <a href='{archive_link}' style='color: #e67e22; text-decoration: none; font-size: 13px; font-weight: bold;'>🔓 Lees artikel</a>
-                        </li>""")
+                        all_found.append({
+                            "title": title, "link": link, "source": name, "snippet": snippet
+                        })
                         seen_links.add(link)
-        except:
-            continue
-            
-    return "".join(results)
+        except: continue
+    
+    # AI Sortering zorgt dat de VIPs (die we hierboven hebben gemarkeerd) bovenaan komen
+    sorted_articles = get_ai_sorted_list(all_found)
+    
+    results_html = ""
+    for i, art in enumerate(sorted_articles, 1):
+        archive_link = f"https://archive.is/{art['link']}"
+        # Visueel onderscheid voor de absolute top
+        border = "#e67e22" if i <= 5 else "#bdc3c7"
+        
+        results_html += f"""
+        <li style='margin-bottom: 25px; list-style: none; border-left: 4px solid {border}; padding-left: 15px;'>
+            <strong style='font-size: 15px; color: #2c3e50;'>[{art['source']}] {art['title']}</strong><br>
+            <p style='margin: 4px 0; color: #555; font-size: 14px;'>{art['snippet'][:160]}...</p>
+            <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a>
+        </li>"""
+    return results_html
 
 if __name__ == "__main__":
     content = run_scraper()
-    
     requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         json={
-            "from": EMAIL_FROM,
-            "to": [EMAIL_RECEIVER],
-            "subject": f"TV Focus: {datetime.now().strftime('%d-%m')}",
-            "html": f"<html><body style='font-family:sans-serif;max-width:650px;margin:0 auto;padding:20px;'><h2 style='color:#e67e22; border-bottom: 2px solid #eee; padding-bottom: 10px;'>📺 TV & Media Focus</h2><ul style='padding:0;'>{content if content else '<li>Geen scherpe TV-matches gevonden.</li>'}</ul></body></html>"
+            "from": EMAIL_FROM, "to": [EMAIL_RECEIVER],
+            "subject": f"Media Update: {datetime.now().strftime('%d-%m')}",
+            "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'><h2>📺 TV & Media Overzicht</h2><ul style='padding:0;'>{content}</ul></body></html>"
         }
     )
