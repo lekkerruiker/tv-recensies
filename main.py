@@ -4,7 +4,8 @@ import re
 from datetime import datetime
 import time
 
-# Instellingen
+# --- CONFIGURATIE ---
+# Deze namen moeten EXACT overeenkomen met de namen in je daily.yml (env gedeelte)
 API_KEY = os.getenv("RESEND_API_KEY")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
@@ -19,51 +20,54 @@ FEEDS = {
 }
 
 def get_gemini_summary(title, source):
+    """Haalt samenvatting op via de gratis Gemini 1.5 Flash API."""
     if not GEMINI_KEY:
         return "REJECT"
     
-    # De specifieke URL voor de gratis Gemini 1.5 Flash API
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     
     prompt = (
         f"Krant: {source}. Titel: {title}. "
         "Is dit mediagerelateerd (TV, series, talkshow, journalistiek)? "
-        "Zo ja: Schrijf 1 korte samenvatting (max 20 woorden) in NL. "
-        "Zo nee: Antwoord alleen met REJECT."
+        "Zo ja: Schrijf 1 korte samenvatting (max 20 woorden) in het Nederlands. "
+        "Zo nee: Antwoord met alleen het woord REJECT."
     )
     
     headers = {'Content-Type': 'application/json'}
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
     try:
-        # Wacht even tussen verzoeken voor de gratis API limiet
+        # Pauze om 'Rate Limits' van de gratis API te voorkomen
         time.sleep(2) 
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         
         if response.status_code != 200:
-            print(f"⚠️ Google API Fout {response.status_code}: {response.text}")
+            print(f"⚠️ Google API Fout {response.status_code} voor '{title}'")
             return "REJECT"
             
         data = response.json()
-        # Navigeer veilig door de Google JSON structuur
         if 'candidates' in data and data['candidates']:
             text = data['candidates'][0]['content']['parts'][0]['text'].strip()
             return text
         return "REJECT"
     except Exception as e:
-        print(f"❌ AI Systeemfout: {e}")
+        print(f"❌ AI Systeemfout voor '{title}': {e}")
         return "REJECT"
 
 def run_scraper():
-    print("🚀 Starten met scannen van feeds...")
+    """Scant alle RSS feeds en filtert ze via de AI."""
+    print("🚀 Scraper gestart...")
     results = []
-    # Keywords die wijzen op media/TV content
-    KEYWORDS = ['lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'borsato', 'vandaag inside', 'jinek', 'renze', 'beau']
+    
+    # Eerste snelle selectie op trefwoorden om AI-tegoed te sparen
+    KEYWORDS = ['lips', 'zap', 'peereboom', 'recensie', 'kijkt', 'serie', 'televisie', 'tv-', 'media', 'nijkamp', 'radio', 'talkshow', 'sonja', 'borsato', 'vandaag inside', 'jinek', 'renze', 'beau', 'journalist']
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     for name, url in FEEDS.items():
+        print(f"Bezig met scannen van {name}...")
         try:
             resp = requests.get(url, headers=headers, timeout=15)
+            # Vind alle items in de RSS feed
             items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
             
             for item in items:
@@ -74,47 +78,41 @@ def run_scraper():
                     title = re.sub('<[^<]+?>', '', t_match.group(1).strip())
                     link = l_match.group(1).strip()
 
-                    # Stap 1: Filter op trefwoorden
+                    # Check trefwoorden
                     if any(k in (title + " " + link).lower() for k in KEYWORDS):
-                        # Stap 2: Laat AI beslissen en samenvatten
+                        # Laat AI bepalen of het echt relevant is
                         summary = get_gemini_summary(title, name)
                         
-                        # Alleen toevoegen als AI het relevant vindt (geen REJECT)
+                        # Alleen toevoegen als de AI niet 'REJECT' antwoordt
                         if "REJECT" not in summary.upper():
                             archive_link = f"https://archive.is/{link}"
                             results.append(f"""
                             <li style='margin-bottom: 25px; list-style: none; border-left: 4px solid #3498db; padding-left: 15px;'>
-                                <strong style='font-size: 17px;'>[{name}] {title}</strong><br>
-                                <p style='margin: 8px 0; color: #444; font-size: 15px;'>{summary}</p>
-                                <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-weight: bold;'>🔓 Lees artikel</a>
+                                <strong style='font-size: 17px; color: #2c3e50;'>[{name}] {title}</strong><br>
+                                <p style='margin: 8px 0; color: #444; font-size: 15px; font-style: italic;'>{summary}</p>
+                                <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-weight: bold;'>🔓 Lees artikel via Archive.is</a>
                             </li>""")
         except Exception as e:
-            print(f"⚠️ Feed fout bij {name}: {e}")
+            print(f"⚠️ Fout bij feed {name}: {e}")
             
     return "".join(results)
 
 if __name__ == "__main__":
+    # Check kritieke variabelen
+    if not API_KEY or not EMAIL_RECEIVER:
+        print("❌ CRITIEKE FOUT: RESEND_API_KEY of EMAIL_RECEIVER ontbreekt in GitHub Secrets.")
+        exit(1)
+
     articles_html = run_scraper()
     
+    # Stel de mail samen (altijd mailen voor bevestiging)
     if not articles_html:
-        print("Geen relevante media-artikelen gevonden vandaag.")
-        # We sturen geen lege mail om je Resend-limiet te sparen
+        final_body = "<p style='color: #666;'>De scraper heeft gedraaid, maar er zijn geen media-artikelen gevonden die de AI-selectie hebben doorstaan.</p>"
+        subject = f"Media Update [GEEN NIEUWS]: {datetime.now().strftime('%d-%m')}"
     else:
-        # Mail versturen via Resend
-        mail_payload = {
-            "from": EMAIL_FROM,
-            "to": [EMAIL_RECEIVER],
-            "subject": f"Media Update: {datetime.now().strftime('%d-%m')}",
-            "html": f"<html><body style='font-family: Arial, sans-serif; max-width: 600px;'><h2>📺 Media & TV Overzicht</h2><hr>{articles_html}</body></html>"
-        }
-        
-        try:
-            r = requests.post(
-                "https://api.resend.com/emails", 
-                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-                json=mail_payload, 
-                timeout=15
-            )
-            print(f"✅ Mail status: {r.status_code}")
-        except Exception as e:
-            print(f"❌ Mail fout: {e}")
+        final_body = f"<ul style='padding: 0;'>{articles_html}</ul>"
+        subject = f"Media Update: {datetime.now().strftime('%d-%m')}"
+
+    # Mail verzenden via Resend API (Directe HTTP request voor maximale stabiliteit)
+    mail_url = "https://api.resend.com/emails"
+    mail
