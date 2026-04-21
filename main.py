@@ -30,7 +30,6 @@ def clean_text(text):
 def scrape_nrc_media():
     """Scrape zowel Zap-recensies als de actuele Cultuur-sectie van NRC."""
     articles = []
-    # We scannen Zap voor recensies en Cultuur voor breder medianieuws
     urls = [
         ("NRC Zap", "https://www.nrc.nl/onderwerp/zap/"),
         ("NRC Cultuur", "https://www.nrc.nl/index/cultuur/")
@@ -39,8 +38,12 @@ def scrape_nrc_media():
     today_str = datetime.now().strftime("/%Y/%m/%d/")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("/%Y/%m/%d/")
     
-    # Woorden die erop wijzen dat een cultuur-artikel over media gaat
-    MEDIA_KEYWORDS = ['tv', 'televisie', 'talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 'omroep', 'presentator', 'streaming', 'netflix', 'videoland']
+    # Uitgebreide lijst trefwoorden inclusief jouw radio/podcast toevoegingen
+    MEDIA_KEYWORDS = [
+        'tv', 'televisie', 'talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 
+        'omroep', 'presentator', 'streaming', 'netflix', 'videoland', 'radio', 
+        'podcast', '538', 'q-music', 'kink', '3fm', 'luistercijfer'
+    ]
 
     for source_label, url in urls:
         try:
@@ -51,12 +54,10 @@ def scrape_nrc_media():
                     title = a.get_text().strip()
                     link = a['href']
                     
-                    # Check datum
                     if today_str in link or yesterday_str in link:
                         if not link.startswith('http'):
                             link = "https://www.nrc.nl" + link
                         
-                        # Voor de algemene Cultuur-sectie doen we een extra check
                         keep = True
                         if source_label == "NRC Cultuur":
                             if not any(word in title.lower() for word in MEDIA_KEYWORDS):
@@ -81,9 +82,12 @@ def get_ai_sorted_list(articles):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     input_data = [{"id": i, "title": a['title'], "source": a['source'], "snippet": a['snippet'][:100]} for i, a in enumerate(articles)]
     
+    # Jouw aangepaste prompt
     prompt = (
         "Je bent een assistent voor een media-expert. Sorteer deze lijst voor een TV-professional. "
-        "PRIORITEIT: TV-recensies (de volkskrant TV-recensie, NRC Zap, Han Lips, Maaike Bos) en nieuws over TV-zenders (RTL, SBS, NPO, Veronica), radio-zenders (NPO radio 1, NPO radio 2, 3FM en andere NPO-zenders, 538, Q-music, Kink) podcasts, internationale tv-ontwikkelingen, technische ontwikkelingen met betrekking op TV, radio en podcasts, talkshows. "
+        "PRIORITEIT: TV-recensies (de volkskrant TV-recensie, NRC Zap, Han Lips, Maaike Bos) en nieuws over TV-zenders (RTL, SBS, NPO, Veronica), "
+        "radio-zenders (NPO radio 1, NPO radio 2, 3FM en andere NPO-zenders, 538, Q-music, Kink) podcasts, internationale tv-ontwikkelingen, "
+        "technische ontwikkelingen met betrekking op TV, radio en podcasts, talkshows. "
         "STRENG VERWIJDEREN: Winacties, prijsvragen, festivaltickets, boeken, theater, beeldende kunst en algemene cultuur zonder media-link. "
         "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
@@ -101,13 +105,11 @@ def run_scraper():
     all_found = []
     seen_links = set()
     
-    # 1. NRC Media & Zap
     for art in scrape_nrc_media():
         if art['link'] not in seen_links:
             all_found.append(art)
             seen_links.add(art['link'])
 
-    # 2. Andere kranten via RSS
     CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
     EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
 
@@ -133,10 +135,12 @@ def run_scraper():
                     keep = False
                     if name == "Trouw" and "maaike bos" in full_lower: keep = True
                     elif name == "Parool" and "han-lips" in link.lower(): keep = True
-                    elif name == "Volkskrant" and any(x in link.lower() for x in ["televisie", "cultuur-media"]): keep = True
+                    elif name == "Volkskrant" and any(x in link.lower() for x in ["televisie", "cultuur-media", "recensie"]): 
+                        keep = True
                     elif name == "Telegraaf" and "entertainment/media" in link.lower(): keep = True
                     else:
-                        media_words = ['talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 'omroep']
+                        # Extra trefwoorden voor radio/podcast in het algemene filter
+                        media_words = ['talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 'omroep', 'radio', 'podcast']
                         if any(word in title.lower() for word in media_words) or any(c in title.lower() for c in CRITICS):
                             keep = True
 
