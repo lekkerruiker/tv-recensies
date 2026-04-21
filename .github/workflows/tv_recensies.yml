@@ -1,1 +1,8 @@
-
+name: Oude Workflow (Inactief)
+on:
+  workflow_dispatch: # Alleen handmatig te starten, dus geen automatisme meer
+jobs:
+  dummy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deze workflow doet niets meer."
