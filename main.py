@@ -58,9 +58,9 @@ def get_ai_sorted_list(articles):
     input_data = [{"id": i, "title": a['title'], "source": a['source'], "snippet": a['snippet'][:100]} for i, a in enumerate(articles)]
     
     prompt = (
-        "Je bent een media-expert. Sorteer deze lijst voor een TV-professional. "
-        "PRIORITEIT: TV-recensies (NRC Zap, Han Lips, Maaike Bos) en nieuws over zenders (RTL, SBS, NPO, Veronica), talkshows en Tina Nijkamp. "
-        "STRENG VERWIJDEREN: Winacties, prijsvragen, festivaltickets (Best Kept Secret), boeken, theater, en algemene cultuur zonder TV-link. "
+        "Je bent de assistent van een media-expert. Sorteer deze lijst op belangrijkheid voor een TV-professional. "
+        "PRIORITEIT: TV-recensies (de Volkskrant Tv-recensie, NRC Zap, Han Lips, Maaike Bos) en nieuws over TV-zenders (RTL, SBS, NPO, Veronica, NPO ZAPP, NPO Zappelin), radio-zenders (NPO radio 1, NPO radio 2, 3FM, andere zenders van de NPO, 538, Q-music, Kink FM) talkshows en Tina Nijkamp. "
+        "STRENG VERWIJDEREN: Winacties, prijsvragen, boeken, theater, en algemene cultuur zonder TV of radio-link. "
         "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
