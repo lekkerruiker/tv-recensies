@@ -28,7 +28,6 @@ def clean_text(text):
     return " ".join(text.split())
 
 def scrape_nrc_zap():
-    """Scrape NRC Zap en filter op datum (afgelopen 24-48 uur)."""
     articles = []
     url = "https://www.nrc.nl/onderwerp/zap/"
     today_str = datetime.now().strftime("/%Y/%m/%d/")
@@ -61,8 +60,8 @@ def get_ai_sorted_list(articles):
     prompt = (
         "Je bent een media-expert. Sorteer deze lijst voor een TV-professional. "
         "PRIORITEIT: TV-recensies (NRC Zap, Han Lips, Maaike Bos) en nieuws over zenders (RTL, SBS, NPO, Veronica), talkshows en Tina Nijkamp. "
-        "VERWIJDER: Cultuur die niets met media te maken heeft (zoals boeken, theater, klassieke muziek). "
-        "Geef ENKEL de JSON lijst met ID-nummers terug, bijv: [2, 0, 5]"
+        "STRENG VERWIJDEREN: Winacties, prijsvragen, festivaltickets (Best Kept Secret), boeken, theater, en algemene cultuur zonder TV-link. "
+        "Geef ENKEL de JSON lijst met ID-nummers terug."
         f"Lijst: {json.dumps(input_data)}"
     )
     
@@ -86,6 +85,8 @@ def run_scraper():
 
     # 2. Andere kranten via RSS
     CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
+    # Harde uitsluiting voor winacties en tickets
+    EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
 
     for name, url in FEEDS.items():
         try:
@@ -103,24 +104,25 @@ def run_scraper():
                     snippet = clean_text(desc_match.group(1)) if desc_match else ""
                     full_lower = (title + " " + snippet + " " + link).lower()
 
+                    # Directe check op ongewenste winacties
+                    if any(bad in title.lower() for bad in EXCLUDE_KEYWORDS):
+                        continue
+
                     keep = False
-                    
-                    # --- GEOPTIMALISEERDE LOGICA ---
                     if name == "Trouw" and "maaike bos" in full_lower: 
                         keep = True
                     elif name == "Parool" and "han-lips" in link.lower(): 
                         keep = True
                     elif name == "Volkskrant" and any(x in link.lower() for x in ["televisie", "cultuur-media"]):
-                        keep = True # Verruimd voor o.a. Veronica-artikelen
+                        keep = True
                     elif name == "Telegraaf" and "entertainment/media" in link.lower(): 
                         keep = True
                     else:
-                        # Algemene vangnet voor relevante termen
                         media_words = ['talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 'omroep']
                         if any(word in title.lower() for word in media_words) or any(c in title.lower() for c in CRITICS):
                             keep = True
 
-                    # --- HARD BLOCK VOOR RUIS (behalve voor NRC/VIPs) ---
+                    # Hard block voor oorlogsnieuws en religie (behalve voor bekende recensenten)
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
                         if name != "NRC" and not any(vip in title.lower() for vip in ['lips', 'maaike bos']):
                             keep = False
