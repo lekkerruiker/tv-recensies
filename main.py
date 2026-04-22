@@ -123,8 +123,13 @@ def run_scraper():
                     
                     # --- SLIMME LABELING & FILTERING ---
                     
+                    # Maaike Bos (Trouw)
+                    if name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
+                        source_label = "Trouw: Maaike Bos"
+                        keep = True
+
                     # Trouw Podcasts
-                    if name == "Trouw" and "/podcasts/" in link.lower():
+                    elif name == "Trouw" and "/podcasts/" in link.lower():
                         source_label = "Trouw Podcast"
                         keep = True
                     
