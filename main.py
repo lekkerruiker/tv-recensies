@@ -37,7 +37,6 @@ def clean_text(text):
     return " ".join(text.split())
 
 def has_exact_word(word_list, text):
-    """Checkt of een woord uit de lijst als specifiek losstaand woord voorkomt (voorkomt Scunthorpe-issues)."""
     text = text.lower()
     for word in word_list:
         if re.search(rf'\b{re.escape(word.lower())}\b', text):
@@ -64,36 +63,42 @@ def scrape_nrc_media():
                     if today_str in link or yesterday_str in link:
                         if not link.startswith('http'):
                             link = "https://www.nrc.nl" + link
-                        
                         if source_label == "NRC Zap" or has_exact_word(MEDIA_KEYWORDS, title):
                             articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
         except Exception as e:
             print(f"Fout bij scrapen {source_label}: {e}")
     return articles
 
-def get_ai_sorted_list(articles):
+def get_ai_prioritized_articles(articles):
     if not GEMINI_KEY or not articles:
-        return articles
+        return {"prio1": articles, "prio2": [], "prio3": []}
+    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    input_data = [{"id": i, "title": a['title'], "source": a['source'], "snippet": a['snippet'][:100]} for i, a in enumerate(articles)]
+    input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(articles)]
     
     prompt = (
-        "Je bent een assistent voor een media-expert. Sorteer deze lijst voor een TV-professional. "
-        "PRIORITEIT: TV-recensies (de volkskrant TV-recensie, NRC Zap, Han Lips, Maaike Bos) en nieuws over TV-zenders (RTL, SBS, NPO, Veronica), "
-        "radio-zenders (NPO radio 1, NPO radio 2, 3FM en andere NPO-zenders, 538, Q-music, Kink) podcasts, internationale tv-ontwikkelingen, "
-        "technische ontwikkelingen met betrekking op TV, radio en podcasts, talkshows. "
-        "STRENG VERWIJDEREN: Winacties, prijsvragen, festivaltickets, concerten, boeken, theater, beeldende kunst en algemene cultuur zonder media-link. "
-        "Geef ENKEL de JSON lijst met ID-nummers terug."
+        "Classificeer de volgende nieuwsartikelen in drie prioriteitsgroepen voor een media-expert:\n"
+        "Groep 1 (Top-recensies): TV-recensies van de Volkskrant, NRC Zap, Han Lips (Parool) of Maaike Bos (Trouw).\n"
+        "Groep 2 (Media-nieuws): Nieuws over TV-zenders, streaming, radio, podcasts of talkshows.\n"
+        "Groep 3 (Overig): Overige relevante media-artikelen die niet in groep 1 of 2 vallen.\n"
+        "STRENG VERWIJDEREN: Alles wat niet over media gaat (sport, klimaat, politiek) of winacties.\n"
+        "Geef ENKEL een JSON terug in dit formaat: {\"prio1\": [ids], \"prio2\": [ids], \"prio3\": [ids]}\n"
         f"Lijst: {json.dumps(input_data)}"
     )
     
     try:
         resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
         raw_text = resp.json()['candidates'][0]['content']['parts'][0]['text']
-        ids = json.loads(re.search(r'\[.*\]', raw_text).group())
-        return [articles[i] for i in ids if i < len(articles)]
-    except:
-        return articles
+        data = json.loads(re.search(r'\{.*\}', raw_text, re.DOTALL).group())
+        
+        result = {"prio1": [], "prio2": [], "prio3": []}
+        for key in result.keys():
+            if key in data:
+                result[key] = [articles[i] for i in data[key] if i < len(articles)]
+        return result
+    except Exception as e:
+        print(f"AI Error: {e}")
+        return {"prio1": articles, "prio2": [], "prio3": []}
 
 def run_scraper():
     all_found = []
@@ -113,79 +118,73 @@ def run_scraper():
             for item in items:
                 t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
                 l_match = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
-                if t_match and l_match:
-                    title = clean_text(t_match.group(1))
-                    link = l_match.group(1).strip()
-                    if link in seen_links: continue
+                if not (t_match and l_match): continue
+                
+                title = clean_text(t_match.group(1))
+                link = l_match.group(1).strip()
+                if link in seen_links: continue
 
-                    desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
-                    snippet = clean_text(desc_match.group(1)) if desc_match else ""
-                    full_lower = (title + " " + snippet + " " + link).lower()
+                desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
+                snippet = clean_text(desc_match.group(1)) if desc_match else ""
+                full_lower = (title + " " + snippet + " " + link).lower()
 
-                    if any(bad in title.lower() for bad in EXCLUDE_KEYWORDS):
-                        continue
+                if any(bad in title.lower() for bad in EXCLUDE_KEYWORDS): continue
 
+                keep = False
+                source_label = name
+                has_critic = any(c in full_lower for c in CRITICS)
+                has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
+
+                if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
+                    source_label, keep = "Parool: Han Lips", True
+                elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
+                    source_label, keep = "Trouw: Maaike Bos", True
+                elif name == "Trouw" and "/podcasts/" in link.lower():
+                    source_label, keep = "Trouw Podcast", True
+                elif name == "Volkskrant" and ("/televisie/" in link.lower() or "tv-recensie" in full_lower):
+                    source_label, keep = "Volkskrant TV-Recensie", True
+                elif name == "Telegraaf" and "/podcast/" in link.lower():
+                    source_label, keep = "Telegraaf Podcast", True
+                elif name == "Telegraaf" and "entertainment/media" in link.lower():
+                    source_label, keep = "Telegraaf Media", True
+
+                if not keep:
+                    if name == "Volkskrant" and "/cultuur-media/" in link.lower() and has_media_keyword:
+                        keep = True
+                    elif name == "Parool" and has_media_keyword:
+                        keep = True
+                    elif has_media_keyword or has_critic:
+                        keep = True
+
+                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']) and not has_critic:
                     keep = False
-                    source_label = name
-                    
-                    # 1. Check op exact trefwoord of criticus
-                    has_critic = any(c in full_lower for c in CRITICS)
-                    has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
 
-                    # 2. Slimme Labeling & Prioriteit
-                    if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
-                        source_label = "Parool: Han Lips"
-                        keep = True
-                    elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
-                        source_label = "Trouw: Maaike Bos"
-                        keep = True
-                    elif name == "Trouw" and "/podcasts/" in link.lower():
-                        source_label = "Trouw Podcast"
-                        keep = True
-                    elif name == "Volkskrant" and ("/televisie/" in link.lower() or "tv-recensie" in full_lower):
-                        source_label = "Volkskrant TV-Recensie"
-                        keep = True
-                    elif name == "Telegraaf" and "/podcast/" in link.lower():
-                        source_label = "Telegraaf Podcast"
-                        keep = True
-                    elif name == "Telegraaf" and "entertainment/media" in link.lower():
-                        source_label = "Telegraaf Media"
-                        keep = True
-
-                    # 3. Aanvullende logica voor algemene secties
-                    if not keep:
-                        if name == "Volkskrant" and "/cultuur-media/" in link.lower() and has_media_keyword:
-                            keep = True
-                        elif name == "Parool" and has_media_keyword:
-                            keep = True
-                        elif has_media_keyword or has_critic:
-                            keep = True
-
-                    # 4. Harde blokkades voor nieuws-ruis (tenzij criticus)
-                    if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
-                        if not has_critic:
-                            keep = False
-
-                    if keep:
-                        all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
-                        seen_links.add(link)
+                if keep:
+                    all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
+                    seen_links.add(link)
         except: continue
     
-    return get_ai_sorted_list(all_found)
+    return get_ai_prioritized_articles(all_found)
+
+def build_html_section(title, articles, color):
+    if not articles: return ""
+    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px;'>{title}</h3><ul style='padding:0;'>"
+    for art in articles:
+        archive_link = f"https://archive.is/{art['link']}"
+        html += f"""
+        <li style='margin-bottom: 20px; list-style: none; border-left: 4px solid {color}; padding-left: 15px;'>
+            <strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br>
+            <p style='margin: 4px 0; color: #555; font-size: 14px;'>{art['snippet'][:160]}...</p>
+            <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a>
+        </li>"""
+    return html + "</ul>"
 
 if __name__ == "__main__":
-    articles = run_scraper()
-    if articles:
-        results_html = ""
-        for i, art in enumerate(articles, 1):
-            archive_link = f"https://archive.is/{art['link']}"
-            border = "#e67e22" if i <= 5 else "#bdc3c7"
-            results_html += f"""
-            <li style='margin-bottom: 25px; list-style: none; border-left: 4px solid {border}; padding-left: 15px;'>
-                <strong style='font-size: 15px; color: #2c3e50;'>[{art['source']}] {art['title']}</strong><br>
-                <p style='margin: 4px 0; color: #555; font-size: 14px;'>{art['snippet'][:160]}...</p>
-                <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a>
-            </li>"""
+    prio_data = run_scraper()
+    if any(prio_data.values()):
+        content_html = build_html_section("⭐ Absolute Prioriteit", prio_data['prio1'], "#e67e22")
+        content_html += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
+        content_html += build_html_section("📝 Overige Media-artikelen", prio_data['prio3'], "#95a5a6")
 
         requests.post(
             "https://api.resend.com/emails",
@@ -193,6 +192,6 @@ if __name__ == "__main__":
             json={
                 "from": EMAIL_FROM, "to": [EMAIL_RECEIVER],
                 "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}",
-                "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'><h2>📺 TV & Media Overzicht</h2><ul style='padding:0;'>{results_html}</ul></body></html>"
+                "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content_html}</body></html>"
             }
         )
