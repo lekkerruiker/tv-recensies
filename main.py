@@ -77,12 +77,12 @@ def get_ai_prioritized_articles(articles):
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(articles)]
     
     prompt = (
-        "Classificeer de volgende nieuwsartikelen in drie prioriteitsgroepen voor een media-expert:\n"
-        "Groep 1 (Top-recensies): TV-recensies van de Volkskrant, NRC Zap, Han Lips (Parool) of Maaike Bos (Trouw).\n"
-        "Groep 2 (Media-nieuws): Nieuws over TV-zenders, streaming, radio, podcasts of talkshows.\n"
-        "Groep 3 (Overig): Overige relevante media-artikelen die niet in groep 1 of 2 vallen.\n"
-        "STRENG VERWIJDEREN: Alles wat niet over media gaat (sport, klimaat, politiek) of winacties.\n"
-        "Geef ENKEL een JSON terug in dit formaat: {\"prio1\": [ids], \"prio2\": [ids], \"prio3\": [ids]}\n"
+        "Classificeer deze nieuwsartikelen voor een media-expert in DRIE groepen:\n\n"
+        "Groep 1 (ABSOLUTE PRIO): Alleen TV-recensies van de Volkskrant, NRC Zap, Han Lips (Parool) of Maaike Bos (Trouw).\n"
+        "Groep 2 (MEDIA NIEUWS): Hard nieuws over TV-zenders (NPO, RTL, SBS), kijkcijfers, talkshows en media-ontwikkelingen.\n"
+        "Groep 3 (OVERIG): Alle podcasts (ook die van Telegraaf/Trouw), achtergrondverhalen, radio-items en overige media-artikelen.\n\n"
+        "Belangrijk: Podcasts horen NOOIT in Groep 1 of 2. Alleen de 4 genoemde recensenten in Groep 1.\n"
+        "Geef ENKEL JSON terug: {\"prio1\": [ids], \"prio2\": [ids], \"prio3\": [ids]}"
         f"Lijst: {json.dumps(input_data)}"
     )
     
@@ -168,7 +168,7 @@ def run_scraper():
 
 def build_html_section(title, articles, color):
     if not articles: return ""
-    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px;'>{title}</h3><ul style='padding:0;'>"
+    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3><ul style='padding:0;'>"
     for art in articles:
         archive_link = f"https://archive.is/{art['link']}"
         html += f"""
@@ -182,9 +182,9 @@ def build_html_section(title, articles, color):
 if __name__ == "__main__":
     prio_data = run_scraper()
     if any(prio_data.values()):
-        content_html = build_html_section("⭐ Absolute Prioriteit", prio_data['prio1'], "#e67e22")
+        content_html = build_html_section("⭐ Dagelijkse Kost (Recensies)", prio_data['prio1'], "#e67e22")
         content_html += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
-        content_html += build_html_section("📝 Overige Media-artikelen", prio_data['prio3'], "#95a5a6")
+        content_html += build_html_section("🎧 Podcasts & Achtergrond", prio_data['prio3'], "#7f8c8d")
 
         requests.post(
             "https://api.resend.com/emails",
