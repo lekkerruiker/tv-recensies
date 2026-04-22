@@ -4,7 +4,7 @@ on:
     # 06:00 UTC is 08:00 in de Nederlandse zomertijd (maart t/m oktober)
     # Als het wintertijd is, komt deze mail om 07:00 uur. 
     # Wil je hem ook in de winter stipt om 08:00, dan moet dit '0 7 * * *' worden.
-    - cron: '0 6 * * *'
+    - cron: '42 5 * * *'
   workflow_dispatch:
 
 jobs:
