@@ -36,6 +36,15 @@ def clean_text(text):
     text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
     return " ".join(text.split())
 
+def has_exact_word(word_list, text):
+    """Checkt of een woord uit de lijst als specifiek losstaand woord voorkomt."""
+    text = text.lower()
+    for word in word_list:
+        # \b zorgt ervoor dat 'npo' niet matcht in 'inpoldering'
+        if re.search(rf'\b{re.escape(word.lower())}\b', text):
+            return True
+    return False
+
 def scrape_nrc_media():
     articles = []
     urls = [
@@ -57,8 +66,7 @@ def scrape_nrc_media():
                         if not link.startswith('http'):
                             link = "https://www.nrc.nl" + link
                         
-                        is_media = any(word in title.lower() for word in MEDIA_KEYWORDS)
-                        if source_label == "NRC Zap" or is_media:
+                        if source_label == "NRC Zap" or has_exact_word(MEDIA_KEYWORDS, title):
                             articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
         except Exception as e:
             print(f"Fout bij scrapen {source_label}: {e}")
@@ -121,48 +129,37 @@ def run_scraper():
                     keep = False
                     source_label = name
                     
-                    # --- SLIMME LABELING & FILTERING ---
-                    
-                    # Han Lips (Parool)
+                    # 1. Check op exact trefwoord of criticus
+                    has_critic = any(c in full_lower for c in CRITICS)
+                    has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
+
+                    # 2. Slimme Labeling
                     if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
                         source_label = "Parool: Han Lips"
                         keep = True
-
-                    # Maaike Bos (Trouw)
                     elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
                         source_label = "Trouw: Maaike Bos"
                         keep = True
-
-                    # Trouw Podcasts
                     elif name == "Trouw" and "/podcasts/" in link.lower():
                         source_label = "Trouw Podcast"
                         keep = True
-                    
-                    # Volkskrant TV-Recensie
                     elif name == "Volkskrant" and ("/televisie/" in link.lower() or "tv-recensie" in full_lower):
                         source_label = "Volkskrant TV-Recensie"
                         keep = True
-                        
-                    # Telegraaf Media
                     elif name == "Telegraaf" and "entertainment/media" in link.lower():
                         source_label = "Telegraaf Media"
                         keep = True
 
-                    # Algemene checks voor media-relevantie
-                    has_critic = any(c in full_lower for c in CRITICS)
-                    has_media_keyword = any(word in title.lower() for word in MEDIA_KEYWORDS)
-
+                    # 3. Aanvullende logica voor Volkskrant cultuur
                     if not keep:
                         if name == "Volkskrant" and "/cultuur-media/" in link.lower() and has_media_keyword:
-                            keep = True
-                        elif name == "Trouw" and has_critic:
                             keep = True
                         elif name == "Parool" and has_media_keyword:
                             keep = True
                         elif has_media_keyword or has_critic:
                             keep = True
 
-                    # Harde blokkades voor nieuwsruis
+                    # 4. Harde blokkades (Gaza, Oekraïne etc.)
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
                         if not has_critic:
                             keep = False
