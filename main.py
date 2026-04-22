@@ -123,8 +123,13 @@ def run_scraper():
                     
                     # --- SLIMME LABELING & FILTERING ---
                     
+                    # Han Lips (Parool)
+                    if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
+                        source_label = "Parool: Han Lips"
+                        keep = True
+
                     # Maaike Bos (Trouw)
-                    if name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
+                    elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
                         source_label = "Trouw: Maaike Bos"
                         keep = True
 
@@ -152,7 +157,7 @@ def run_scraper():
                             keep = True
                         elif name == "Trouw" and has_critic:
                             keep = True
-                        elif name == "Parool" and ("han-lips" in link.lower() or has_media_keyword):
+                        elif name == "Parool" and has_media_keyword:
                             keep = True
                         elif has_media_keyword or has_critic:
                             keep = True
