@@ -37,10 +37,9 @@ def clean_text(text):
     return " ".join(text.split())
 
 def has_exact_word(word_list, text):
-    """Checkt of een woord uit de lijst als specifiek losstaand woord voorkomt."""
+    """Checkt of een woord uit de lijst als specifiek losstaand woord voorkomt (voorkomt Scunthorpe-issues)."""
     text = text.lower()
     for word in word_list:
-        # \b zorgt ervoor dat 'npo' niet matcht in 'inpoldering'
         if re.search(rf'\b{re.escape(word.lower())}\b', text):
             return True
     return False
@@ -133,7 +132,7 @@ def run_scraper():
                     has_critic = any(c in full_lower for c in CRITICS)
                     has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
 
-                    # 2. Slimme Labeling
+                    # 2. Slimme Labeling & Prioriteit
                     if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
                         source_label = "Parool: Han Lips"
                         keep = True
@@ -146,11 +145,14 @@ def run_scraper():
                     elif name == "Volkskrant" and ("/televisie/" in link.lower() or "tv-recensie" in full_lower):
                         source_label = "Volkskrant TV-Recensie"
                         keep = True
+                    elif name == "Telegraaf" and "/podcast/" in link.lower():
+                        source_label = "Telegraaf Podcast"
+                        keep = True
                     elif name == "Telegraaf" and "entertainment/media" in link.lower():
                         source_label = "Telegraaf Media"
                         keep = True
 
-                    # 3. Aanvullende logica voor Volkskrant cultuur
+                    # 3. Aanvullende logica voor algemene secties
                     if not keep:
                         if name == "Volkskrant" and "/cultuur-media/" in link.lower() and has_media_keyword:
                             keep = True
@@ -159,7 +161,7 @@ def run_scraper():
                         elif has_media_keyword or has_critic:
                             keep = True
 
-                    # 4. Harde blokkades (Gaza, Oekraïne etc.)
+                    # 4. Harde blokkades voor nieuws-ruis (tenzij criticus)
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
                         if not has_critic:
                             keep = False
