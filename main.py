@@ -22,12 +22,15 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Dezelfde trefwoordenlijst voor consistentie
+# Uitgebreide lijst met media-specifieke trefwoorden
 MEDIA_KEYWORDS = [
     'tv', 'televisie', 'talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 
     'omroep', 'presentator', 'streaming', 'netflix', 'videoland', 'radio', 
-    'podcast', '538', 'q-music', 'kink', '3fm', 'luistercijfer'
+    'podcast', '538', 'q-music', 'kink', '3fm', 'luistercijfer', 'humberto', 
+    'beau', 'vandaag inside', 'renze', 'op1', 'eva jinek', 'arjen lubach'
 ]
+
+CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
 
 def clean_text(text):
     if not text: return ""
@@ -54,11 +57,9 @@ def scrape_nrc_media():
                     if today_str in link or yesterday_str in link:
                         if not link.startswith('http'):
                             link = "https://www.nrc.nl" + link
-                        keep = True
-                        if source_label == "NRC Cultuur":
-                            if not any(word in title.lower() for word in MEDIA_KEYWORDS):
-                                keep = False
-                        if keep:
+                        
+                        is_media = any(word in title.lower() for word in MEDIA_KEYWORDS)
+                        if source_label == "NRC Zap" or is_media:
                             articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
         except Exception as e:
             print(f"Fout bij scrapen {source_label}: {e}")
@@ -92,12 +93,12 @@ def run_scraper():
     all_found = []
     seen_links = set()
     
+    # 1. NRC
     for art in scrape_nrc_media():
         if art['link'] not in seen_links:
             all_found.append(art)
             seen_links.add(art['link'])
 
-    CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
     EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
 
     for name, url in FEEDS.items():
@@ -121,25 +122,36 @@ def run_scraper():
 
                     keep = False
                     
-                    # --- VOLKSKRANT SPECIFIEKE LOGICA ---
+                    # Check of er een bekende criticus of media-trefwoord in staat
+                    has_critic = any(c in full_lower for c in CRITICS)
+                    has_media_keyword = any(word in full_lower for word in MEDIA_KEYWORDS)
+
                     if name == "Volkskrant":
-                        if "/televisie/" in link.lower():
-                            keep = True # De recensie moet altijd!
-                        elif "/cultuur-media/" in link.lower():
-                            # Alleen cultuur-media als het echt over TV/Radio/Media gaat
-                            if any(word in full_lower for word in MEDIA_KEYWORDS):
-                                keep = True
+                        # De recensie (/televisie/) of media-gerelateerde cultuur
+                        if "/televisie/" in link.lower() or "/cultuur-media/" in link.lower() or has_media_keyword:
+                            keep = True
                     
-                    # --- OVERIGE BRONNEN ---
-                    elif name == "Trouw" and "maaike bos" in full_lower: keep = True
-                    elif name == "Parool" and "han-lips" in link.lower(): keep = True
-                    elif name == "Telegraaf" and "entertainment/media" in link.lower(): keep = True
-                    else:
-                        if any(word in title.lower() for word in MEDIA_KEYWORDS) or any(c in title.lower() for c in CRITICS):
+                    elif name == "Trouw":
+                        # Trouw is breed; alleen doorlaten bij criticus of harde media-match
+                        if has_critic or ("media" in link.lower() and has_media_keyword):
+                            keep = True
+                    
+                    elif name == "Parool":
+                        if "han-lips" in link.lower() or has_media_keyword:
+                            keep = True
+                            
+                    elif name == "Telegraaf":
+                        # Telegraaf media sectie filteren op trefwoorden
+                        if "entertainment/media" in link.lower() and has_media_keyword:
                             keep = True
 
+                    # Algemeen vangnet voor alle bronnen
+                    if has_media_keyword or has_critic:
+                        keep = True
+
+                    # Harde blokkades
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
-                        if not any(vip in title.lower() for vip in ['lips', 'maaike bos']):
+                        if not has_critic:
                             keep = False
 
                     if keep:
