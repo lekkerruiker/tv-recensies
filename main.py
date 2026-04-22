@@ -22,29 +22,27 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
+# Dezelfde trefwoordenlijst voor consistentie
+MEDIA_KEYWORDS = [
+    'tv', 'televisie', 'talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 
+    'omroep', 'presentator', 'streaming', 'netflix', 'videoland', 'radio', 
+    'podcast', '538', 'q-music', 'kink', '3fm', 'luistercijfer'
+]
+
 def clean_text(text):
     if not text: return ""
     text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
     return " ".join(text.split())
 
 def scrape_nrc_media():
-    """Scrape zowel Zap-recensies als de actuele Cultuur-sectie van NRC."""
     articles = []
     urls = [
         ("NRC Zap", "https://www.nrc.nl/onderwerp/zap/"),
         ("NRC Cultuur", "https://www.nrc.nl/index/cultuur/")
     ]
-    
     today_str = datetime.now().strftime("/%Y/%m/%d/")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("/%Y/%m/%d/")
     
-    # Uitgebreide lijst trefwoorden inclusief jouw radio/podcast toevoegingen
-    MEDIA_KEYWORDS = [
-        'tv', 'televisie', 'talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 
-        'omroep', 'presentator', 'streaming', 'netflix', 'videoland', 'radio', 
-        'podcast', '538', 'q-music', 'kink', '3fm', 'luistercijfer'
-    ]
-
     for source_label, url in urls:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -53,36 +51,25 @@ def scrape_nrc_media():
                 for a in soup.find_all('a', class_='nmt-item__link'):
                     title = a.get_text().strip()
                     link = a['href']
-                    
                     if today_str in link or yesterday_str in link:
                         if not link.startswith('http'):
                             link = "https://www.nrc.nl" + link
-                        
                         keep = True
                         if source_label == "NRC Cultuur":
                             if not any(word in title.lower() for word in MEDIA_KEYWORDS):
                                 keep = False
-                        
                         if keep:
-                            articles.append({
-                                "title": title,
-                                "link": link,
-                                "source": source_label,
-                                "snippet": f"Nieuws uit {source_label}"
-                            })
+                            articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
         except Exception as e:
             print(f"Fout bij scrapen {source_label}: {e}")
-            
     return articles
 
 def get_ai_sorted_list(articles):
     if not GEMINI_KEY or not articles:
         return articles
-    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     input_data = [{"id": i, "title": a['title'], "source": a['source'], "snippet": a['snippet'][:100]} for i, a in enumerate(articles)]
     
-    # Jouw aangepaste prompt
     prompt = (
         "Je bent een assistent voor een media-expert. Sorteer deze lijst voor een TV-professional. "
         "PRIORITEIT: TV-recensies (de volkskrant TV-recensie, NRC Zap, Han Lips, Maaike Bos) en nieuws over TV-zenders (RTL, SBS, NPO, Veronica), "
@@ -133,15 +120,22 @@ def run_scraper():
                         continue
 
                     keep = False
-                    if name == "Trouw" and "maaike bos" in full_lower: keep = True
+                    
+                    # --- VOLKSKRANT SPECIFIEKE LOGICA ---
+                    if name == "Volkskrant":
+                        if "/televisie/" in link.lower():
+                            keep = True # De recensie moet altijd!
+                        elif "/cultuur-media/" in link.lower():
+                            # Alleen cultuur-media als het echt over TV/Radio/Media gaat
+                            if any(word in full_lower for word in MEDIA_KEYWORDS):
+                                keep = True
+                    
+                    # --- OVERIGE BRONNEN ---
+                    elif name == "Trouw" and "maaike bos" in full_lower: keep = True
                     elif name == "Parool" and "han-lips" in link.lower(): keep = True
-                    elif name == "Volkskrant" and any(x in link.lower() for x in ["televisie", "cultuur-media", "recensie"]): 
-                        keep = True
                     elif name == "Telegraaf" and "entertainment/media" in link.lower(): keep = True
                     else:
-                        # Extra trefwoorden voor radio/podcast in het algemene filter
-                        media_words = ['talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 'omroep', 'radio', 'podcast']
-                        if any(word in title.lower() for word in media_words) or any(c in title.lower() for c in CRITICS):
+                        if any(word in title.lower() for word in MEDIA_KEYWORDS) or any(c in title.lower() for c in CRITICS):
                             keep = True
 
                     if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
