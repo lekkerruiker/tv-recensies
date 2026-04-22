@@ -26,7 +26,7 @@ MEDIA_KEYWORDS = [
     'tv', 'televisie', 'talkshow', 'npo', 'rtl', 'sbs', 'veronica', 'kijkcijfer', 
     'omroep', 'presentator', 'streaming', 'netflix', 'videoland', 'radio', 
     'podcast', '538', 'q-music', 'kink', '3fm', 'luistercijfer', 'humberto', 
-    'beau', 'vandaag inside', 'renze', 'op1', 'eva jinek', 'arjen lubach'
+    'beau', 'vandaag inside', 'renze', 'op1', 'eva jinek', 'arjen lubach', 'tv-recensie'
 ]
 
 CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
@@ -121,30 +121,35 @@ def run_scraper():
                     keep = False
                     source_label = name
                     
-                    # Specifieke check voor Trouw Podcast URL
+                    # --- SLIMME LABELING & FILTERING ---
+                    
+                    # Trouw Podcasts
                     if name == "Trouw" and "/podcasts/" in link.lower():
                         source_label = "Trouw Podcast"
                         keep = True
                     
-                    # Check of er een bekende criticus of media-trefwoord in staat
+                    # Volkskrant TV-Recensie
+                    elif name == "Volkskrant" and ("/televisie/" in link.lower() or "tv-recensie" in full_lower):
+                        source_label = "Volkskrant TV-Recensie"
+                        keep = True
+                        
+                    # Telegraaf Media
+                    elif name == "Telegraaf" and "entertainment/media" in link.lower():
+                        source_label = "Telegraaf Media"
+                        keep = True
+
+                    # Algemene checks voor media-relevantie
                     has_critic = any(c in full_lower for c in CRITICS)
                     has_media_keyword = any(word in title.lower() for word in MEDIA_KEYWORDS)
 
-                    if name == "Volkskrant":
-                        # Strenge URL check voor Volkskrant (geen concerten meer)
-                        if "/televisie/" in link.lower() or ("/cultuur-media/" in link.lower() and has_media_keyword):
+                    if not keep:
+                        if name == "Volkskrant" and "/cultuur-media/" in link.lower() and has_media_keyword:
                             keep = True
-                    
-                    elif name == "Trouw" and source_label != "Trouw Podcast":
-                        if has_critic or (has_media_keyword and "cultuur" in link.lower()):
+                        elif name == "Trouw" and has_critic:
                             keep = True
-                    
-                    elif name == "Parool":
-                        if "han-lips" in link.lower() or has_media_keyword:
+                        elif name == "Parool" and ("han-lips" in link.lower() or has_media_keyword):
                             keep = True
-                            
-                    elif name == "Telegraaf":
-                        if "entertainment/media" in link.lower() and has_media_keyword:
+                        elif has_media_keyword or has_critic:
                             keep = True
 
                     # Harde blokkades voor nieuwsruis
