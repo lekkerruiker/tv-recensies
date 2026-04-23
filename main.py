@@ -22,6 +22,14 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
+# Brede media-focus voor RSS filtering
+MEDIA_KEYWORDS = [
+    'tv', 'televisie', 'recensie', 'talkshow', 'npo', 'rtl', 'sbs', 'vi', 
+    'vandaag inside', 'kijkcijfers', 'omroep', 'presentator', 'streaming', 
+    'netflix', 'videoland', 'radio', 'podcast', 'beau', 'humberto', 'renze', 
+    'jinek', 'lubach', 'even tot hier'
+]
+
 def clean_text(text):
     if not text: return ""
     text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
@@ -32,31 +40,32 @@ def scrape_direct_pages():
     today_str = datetime.now().strftime("/%Y/%m/%d/")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("/%Y/%m/%d/")
     
-    # 1. VOLKSKRANT TV (We pakken simpelweg de bovenste koppen van de pagina)
+    # 1. VOLKSKRANT TV SECTIE (Directe extractie van de pagina)
     try:
         vk_url = "https://www.volkskrant.nl/televisie/"
         resp = requests.get(vk_url, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             count = 0
-            # Zoek alle links in de hoofdkolom die op artikelen lijken
+            # We pakken de artikelen die in de 'televisie' sectie staan
             for a in soup.find_all('a', href=True):
                 link = a['href']
                 title = a.get_text().strip()
-                # Artikelen op VK hebben vaak een specifieke structuur (~b...)
-                if "/televisie/" in link and len(title) > 20:
+                
+                # Check of het een artikel-link is in de juiste sectie
+                if "/televisie/" in link and len(title) > 25:
                     full_link = f"https://www.volkskrant.nl{link}" if not link.startswith('http') else link
                     articles.append({
                         "title": title, 
                         "link": full_link, 
-                        "source": "Volkskrant TV-Recensie", 
-                        "snippet": "Gescraped van de TV-sectie."
+                        "source": "Volkskrant TV-Recensie"
                     })
                     count += 1
-                if count >= 6: break # Pak de top 6, de AI filtert de rest
-    except: pass
+                if count >= 4: break # De bovenste artikelen zijn meestal de recensies
+    except Exception as e:
+        print(f"Fout bij VK scrape: {e}")
 
-    # 2. NRC ZAP (Focus op vandaag/gisteren)
+    # 2. NRC ZAP
     try:
         nrc_url = "https://www.nrc.nl/onderwerp/zap/"
         resp = requests.get(nrc_url, headers=HEADERS, timeout=15)
@@ -68,57 +77,59 @@ def scrape_direct_pages():
                 title = a.get_text().strip()
                 if (today_str in link or yesterday_str in link) and len(title) > 15:
                     full_link = f"https://www.nrc.nl{link}" if not link.startswith('http') else link
-                    articles.append({"title": title, "link": full_link, "source": "NRC Zap", "snippet": "Zap-sectie NRC."})
+                    articles.append({"title": title, "link": full_link, "source": "NRC Zap"})
                     count += 1
-                if count >= 3: break
+                if count >= 2: break
     except: pass
 
     return articles
 
 def get_ai_prioritized_articles(articles):
-    # Definieer wat sowieso Prio 1 is op basis van bron/label
-    prio1_labels = ["Parool: Han Lips", "Trouw: Maaike Bos", "Volkskrant TV-Recensie", "NRC Zap"]
+    # Alles met deze labels gaat direct naar Prio 1 (Oranje)
+    prio1_labels = ["Volkskrant TV-Recensie", "NRC Zap", "Parool: Han Lips", "Trouw: Maaike Bos"]
     prio1_list = [a for a in articles if a['source'] in prio1_labels]
+    
+    # De rest (RSS vandaan) wordt gefilterd door de AI
     others = [a for a in articles if a['source'] not in prio1_labels]
 
     if not others:
         return {"prio1": prio1_list, "prio2": [], "prio3": []}
     
-    # Laat Gemini het zware werk doen voor de rest
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(others)]
     
     prompt = (
-        "Je bent een expert media-analist. Bekijk de titels en sorteer ze:\n"
-        "Groep 2 (Media Nieuws): Hard nieuws over TV, radio, streamingcijfers, presentatoren en zenders.\n"
-        "Groep 3 (Verdieping): Media-podcasts, lange interviews met makers, en achtergrondverhalen over de industrie.\n"
-        "VERWIJDER STRENG: Alles wat NIET met media (TV/Radio/Streaming) te maken heeft. Geen algemene cultuur, boeken of politiek.\n"
+        "Je bent een media-expert. Filter de volgende lijst met nieuws-titels.\n"
+        "Groep 2: Belangrijk nieuws over TV, Radio en Streaming (kijkcijfers, nieuwe programma's, presentatoren).\n"
+        "Groep 3: Media-gerelateerde podcasts en diepte-interviews.\n"
+        "VERWIJDER STRENG: Alles wat NIET over media gaat (geen algemene cultuur, boeken, natuur of politiek).\n"
         f"Lijst: {json.dumps(input_data)}\n"
         "Antwoord enkel met JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
     )
     
     try:
         resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
-        res_text = resp.json()['candidates'][0]['content']['parts'][0]['text']
-        data = json.loads(re.search(r'\{.*\}', res_text, re.DOTALL).group())
+        res_json = resp.json()
+        raw_text = res_json['candidates'][0]['content']['parts'][0]['text']
+        data = json.loads(re.search(r'\{.*\}', raw_text, re.DOTALL).group())
         return {
             "prio1": prio1_list,
             "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
             "prio3": [others[i] for i in data.get("prio3", []) if i < len(others)]
         }
-    except:
-        # Bij fout: stuur alles mee in Prio 2 zodat we niets missen
-        return {"prio1": prio1_list, "prio2": others, "prio3": []}
+    except Exception as e:
+        print(f"AI Filter fout: {e}")
+        return {"prio1": prio1_list, "prio2": [], "prio3": []}
 
 def run_scraper():
     all_found, seen_links = [], set()
     
-    # 1. Directe vangers (Prio 1 kandidaten)
+    # 1. Prio 1 vangers (Direct van de pagina's)
     for art in scrape_direct_pages():
         if art['link'] not in seen_links:
             all_found.append(art); seen_links.add(art['link'])
 
-    # 2. RSS Feeds
+    # 2. RSS Vangnet
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -131,21 +142,16 @@ def run_scraper():
                 
                 t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
                 title = clean_text(t_match.group(1)) if t_match else ""
-                full_lower = (title + " " + link).lower()
-
-                # Specifieke kolommen herkennen
-                if "han-lips" in link or "han lips" in full_lower:
-                    all_found.append({"title": title, "link": link, "source": "Parool: Han Lips", "snippet": "TV-column"})
-                    seen_links.add(link)
-                elif "maaike-bos" in link or "maaike bos" in full_lower:
-                    all_found.append({"title": title, "link": link, "source": "Trouw: Maaike Bos", "snippet": "TV-recensie"})
-                    seen_links.add(link)
-                elif "volkskrant.nl/televisie" in link: # Vangnet voor VK TV in RSS
-                    all_found.append({"title": title, "link": link, "source": "Volkskrant TV-Recensie", "snippet": "Gevonden via RSS."})
-                    seen_links.add(link)
-                else:
-                    # Alles wat overblijft gaat naar de AI voor filtering
-                    all_found.append({"title": title, "link": link, "source": name, "snippet": "RSS feed item."})
+                
+                # Snelle pre-filter op trefwoorden om ruis voor de AI te beperken
+                if any(kw in title.lower() for kw in MEDIA_KEYWORDS) or any(kw in link.lower() for kw in ['televisie', 'media', 'podcast']):
+                    source = name
+                    # Specifieke columns herkennen in RSS
+                    if "han-lips" in link: source = "Parool: Han Lips"
+                    elif "maaike-bos" in link: source = "Trouw: Maaike Bos"
+                    elif "volkskrant.nl/televisie" in link: source = "Volkskrant TV-Recensie"
+                    
+                    all_found.append({"title": title, "link": link, "source": source})
                     seen_links.add(link)
         except: continue
             
@@ -153,19 +159,18 @@ def run_scraper():
 
 def build_html_section(title, articles, color):
     if not articles: return ""
-    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3><ul style='padding:0;'>"
+    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3>"
     for art in articles:
-        html += f"""<li style='margin-bottom: 20px; list-style: none; border-left: 4px solid {color}; padding-left: 15px;'>
-            <strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br>
-            <a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a></li>"""
-    return html + "</ul>"
+        # Gebruik archive.is om betaalmuren te omzeilen
+        html += f"<p style='margin-bottom: 12px;'><strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br><a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none; font-size: 13px;'>🔓 Lees artikel</a></p>"
+    return html
 
 if __name__ == "__main__":
     prio_data = run_scraper()
     
-    content = build_html_section("⭐ Belangrijkste artikelen", prio_data['prio1'], "#e67e22")
+    content = build_html_section("⭐ Belangrijkste Recensies", prio_data['prio1'], "#e67e22")
     content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
-    content += build_html_section("🎧 Podcasts & Achtergrond", prio_data['prio3'], "#7f8c8d")
+    content += build_html_section("🎧 Podcasts & Verdieping", prio_data['prio3'], "#7f8c8d")
     
     if any(prio_data.values()):
         requests.post("https://api.resend.com/emails", 
