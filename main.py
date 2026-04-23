@@ -3,89 +3,85 @@ import requests
 import feedparser
 from datetime import datetime, timedelta
 import re
-import time
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-# We herstellen de standaard RSS-feeds en voegen de Google News variant toe voor VK
+# WEER TERUG NAAR DE BRON: Google News was een fout uitstapje.
 FEEDS = {
-    "Volkskrant": "https://news.google.com/rss/search?q=site:volkskrant.nl+televisie&hl=nl&gl=NL&ceid=NL:nl",
+    "Volkskrant": "https://www.volkskrant.nl/televisie/rss.xml",
     "Trouw": "https://www.trouw.nl/rss.xml",
     "Parool": "https://www.parool.nl/rss.xml",
     "Telegraaf": "https://www.telegraaf.nl/rss",
     "NRC": "https://www.nrc.nl/rss/"
 }
 
+# Gebruik een zeer specifieke header om niet als bot herkend te worden
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 }
 
-def is_recent(entry):
-    """Check of artikel van de laatste 48 uur is."""
+def is_very_recent(entry):
+    """STRENG: Alleen artikelen van de laatste 24 uur."""
     pub = entry.get('published_parsed') or entry.get('updated_parsed')
-    if not pub: return True # Bij twijfel meenemen
-    return datetime(*pub[:6]) >= (datetime.now() - timedelta(hours=48))
+    if not pub: return False
+    
+    dt_entry = datetime(*pub[:6])
+    # Vergelijk met NU, maximaal 24 uur verschil
+    return dt_entry >= (datetime.now() - timedelta(hours=24))
 
 def get_prio_level(title, link, source):
     t, l = title.lower(), link.lower()
     
-    # 1. HARDE BLOCKS (Hersteld: minder streng om Parool niet te blokkeren)
-    # We blokkeren alleen als het woord 'recensie' specifiek gecombineerd wordt met 'boek' of 'concert'
-    if any(x in t for x in ['boekrecensie', 'concertrecensie', 'albumrecensie']):
+    # 1. HARDE BLOCKS (Tegen de gidsen en oude ruis)
+    blocks = ['boekrecensie', 'concertrecensie', 'uitzendschema', 'tv-gids', 'radio', 'podcast', '2003', '2004']
+    if any(x in t or x in l for x in blocks):
         return 0
 
-    # 2. PRIO 1 (Recensies & Media-secties)
-    # Voor Parool en VK kijken we naar de URL-structuur
-    prio1_keywords = ['han-lips', 'maaike-bos', 'peereboom', 'zap', 'televisie', 'tv-recensie', 'bekeken:']
-    if any(x in l or x in t for x in prio1_keywords):
-        # Dubbele check: geen politiek of klimaat in de titel
-        if not any(x in t for x in ['klimaat', 'stikstof', 'oekraïne']):
+    # 2. PRIO 1 (Recensies)
+    # Focus op bekende namen en het pad 'televisie'
+    if any(x in l for x in ['/televisie', 'han-lips', 'maaike-bos', 'peereboom', 'zap']):
+        # Zorg dat we geen algemene 'cultuur' of 'columns' pakken die niet over TV gaan
+        if any(x in t or x in l for x in ['tv', 'recensie', 'kijkt', 'serie', 'docu']):
             return 1
 
-    # 3. PRIO 2 (Algemeen Media Nieuws)
-    # Gebruik \b voor hele woorden tegen 'inpoldering'
-    if re.search(r'\b(tv|npo|rtl|sbs|videoland|netflix|streaming|omroep|kijkcijfers)\b', t):
-        return 2
+    # 3. PRIO 2 (Media Nieuws)
+    # Alleen als 'tv' of 'omroep' een heel woord is (\b)
+    if re.search(r'\b(tv|npo|rtl|sbs|videoland|netflix|streaming|omroep)\b', t):
+        if not any(x in t for x in ['klimaat', 'ecb', 'polder', 'asiel']):
+            return 2
             
     return 0
 
 def main():
-    all_prio1 = []
-    all_prio2 = []
-    seen = set()
-
-    print("Starten van de herstelde Media Scraper...")
+    all_prio1, all_prio2, seen = [], [], set()
 
     for name, url in FEEDS.items():
         try:
             print(f"Scannen: {name}...")
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            # We gebruiken een timeout en sessie om stabieler te zijn
+            session = requests.Session()
+            resp = session.get(url, headers=HEADERS, timeout=15)
             feed = feedparser.parse(resp.text)
             
             for entry in feed.entries:
                 link = entry.get('link')
                 if not link or link in seen: continue
                 
-                # Datum check (behalve voor Google News/VK, die is soms lastig te parsen)
-                if name != "Volkskrant" and not is_recent(entry):
+                # STRENGSTE DATUM CHECK
+                if not is_very_recent(entry):
                     continue
                 
                 title = entry.get('title', '').strip()
-                # Bij Google News de bron-naam uit de titel halen (bijv. "Titel - Volkskrant")
-                if " - Volkskrant" in title:
-                    title = title.split(" - Volkskrant")[0]
-
                 prio = get_prio_level(title, link, name)
                 
                 if prio > 0:
                     item = {'title': title, 'link': link, 'source': name}
-                    if prio == 1:
-                        all_prio1.append(item)
-                    else:
-                        all_prio2.append(item)
+                    if prio == 1: all_prio1.append(item)
+                    else: all_prio2.append(item)
                     seen.add(link)
         except Exception as e:
             print(f"Fout bij {name}: {e}")
@@ -106,12 +102,13 @@ def main():
         requests.post("https://api.resend.com/emails", 
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
-                "from": EMAIL_FROM, 
-                "to": [EMAIL_RECEIVER], 
+                "from": EMAIL_FROM, "to": [EMAIL_RECEIVER], 
                 "subject": f"Media Focus {datetime.now().strftime('%d-%m')}",
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
-        print("E-mail verzonden!")
+        print("Mail verzonden!")
+    else:
+        print("Geen verse artikelen gevonden (jonger dan 24 uur).")
 
 if __name__ == "__main__":
     main()
