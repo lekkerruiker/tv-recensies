@@ -20,9 +20,12 @@ jobs:
         run: |
           pip install requests feedparser
       
-      - name: Run scraper
+- name: Run scraper
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-        run: python main.py
+        run: |
+          echo "Starten van de scraper..."
+          python main.py
+          echo "Scraper is klaar."
