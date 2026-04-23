@@ -1,7 +1,7 @@
 import os
 import requests
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 
 # --- CONFIGURATIE ---
@@ -22,11 +22,12 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Alleen artikelen met deze woorden (of in deze secties) komen in de voorselectie
+# Iets bredere selectie om te voorkomen dat we de recensie missen
 STRICT_MEDIA_WORDS = [
-    'tv', 'televisie', 'radio', 'kijkcijfers', 'podcast', 'streaming', 'netflix', 
-    'videoland', 'npo', 'rtl', 'sbs', 'vi', 'vandaag inside', 'jinek', 'lubach', 
-    'humberto', 'beau', 'renze', 'even tot hier', 'recensie', 'beeldbuis', 'omroep'
+    'tv', 'televisie', 'radio', 'kijkcijfers', 'kijkcijfer', 'podcast', 'streaming', 
+    'netflix', 'videoland', 'npo', 'rtl', 'sbs', 'vi', 'vandaag inside', 'jinek', 
+    'lubach', 'humberto', 'beau', 'renze', 'recensie', 'beeldbuis', 'omroep', 
+    'programma', 'kijkers', 'presentator', 'presentatrice'
 ]
 
 def clean_text(text):
@@ -38,22 +39,26 @@ def get_ai_decision(articles):
     if not articles:
         return {"prio1": [], "prio2": [], "prio3": []}
     
+    if not GEMINI_KEY:
+        print("Geen Gemini Key gevonden, stuur alles door als Prio 2")
+        return {"prio1": [], "prio2": articles, "prio3": []}
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(articles)]
     
     prompt = (
-        "Je bent een filter voor een media-expert. Sorteer de lijst in drie categorieën:\n"
-        "1. 'prio1': Echte TV-recensies of dagelijkse media-columns (zoals over een specifiek tv-programma).\n"
-        "2. 'prio2': Hard nieuws over zenders, kijkcijfers, presentatoren of streaming-diensten.\n"
-        "3. 'prio3': Media-podcasts en interviews met tv-makers.\n\n"
-        "BELANGRIJK: Verwijder alles wat gaat over: boeken, theater, musea, popmuziek, politiek of algemene maatschappij. "
-        "Als het niet DIRECT over TV, Radio of de media-industrie gaat, gooi het dan weg.\n"
+        "Sorteer deze media-artikelen:\n"
+        "1. 'prio1': Echte TV-recensies of dagelijkse columns (Han Lips, Maaike Bos, NRC Zap, Volkskrant recensies).\n"
+        "2. 'prio2': Nieuws over zenders, kijkcijfers, streaming en presentatoren.\n"
+        "3. 'prio3': Media-podcasts en interviews.\n"
+        "VERWIJDER ALLES wat niet direct over TV/Radio/Media gaat (geen boeken, theater, politiek).\n"
         f"Lijst: {json.dumps(input_data)}\n"
         "Antwoord enkel met JSON: {\"prio1\": [ids], \"prio2\": [ids], \"prio3\": [ids]}"
     )
     
     try:
         resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=25)
+        resp.raise_for_status()
         raw_response = resp.json()['candidates'][0]['content']['parts'][0]['text']
         data = json.loads(re.search(r'\{.*\}', raw_response, re.DOTALL).group())
         
@@ -62,14 +67,16 @@ def get_ai_decision(articles):
             "prio2": [articles[i] for i in data.get("prio2", []) if i < len(articles)],
             "prio3": [articles[i] for i in data.get("prio3", []) if i < len(articles)]
         }
-    except:
-        return {"prio1": [], "prio2": [], "prio3": []}
+    except Exception as e:
+        print(f"AI Filter fout: {e}. Stuur ongefilterde lijst.")
+        return {"prio1": [], "prio2": articles, "prio3": []}
 
 def run_scraper():
     all_potential = []
     seen_links = set()
     
     for name, url in FEEDS.items():
+        print(f"Scannen van {name}...")
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
             items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
@@ -86,39 +93,44 @@ def run_scraper():
                 title_lower = title.lower()
                 link_lower = link.lower()
 
-                # VIP CHECK: Deze moeten ALTIJD door naar de AI (of direct naar Prio 1)
+                # VIP CHECK: Recensie-secties
                 is_vip = any(x in link_lower for x in ['/televisie', '/zap', 'han-lips', 'maaike-bos'])
-                
-                # MEDIA CHECK: Bevat de titel media-trefwoorden?
+                # MEDIA CHECK: Trefwoorden
                 has_keyword = any(kw in title_lower for kw in STRICT_MEDIA_WORDS)
 
                 if is_vip or has_keyword:
                     all_potential.append({"title": title, "link": link, "source": name})
                     seen_links.add(link)
-        except: continue
+        except Exception as e:
+            print(f"Fout bij feed {name}: {e}")
             
+    print(f"Totaal potentieel gevonden: {len(all_potential)}")
     return get_ai_decision(all_potential)
 
 def build_html_section(title, articles, color):
     if not articles: return ""
-    html = f"<div style='margin-bottom: 25px;'><h3 style='color: {color}; border-bottom: 1px solid {color}; margin-bottom: 10px;'>{title}</h3>"
+    html = f"<div style='margin-bottom: 25px;'><h3 style='color: {color}; border-bottom: 1px solid {color}; padding-bottom: 5px;'>{title}</h3>"
     for art in articles:
-        html += f"<div style='margin-bottom: 8px;'><strong>[{art['source']}]</strong> {art['title']} <a href='https://archive.is/{art['link']}' style='font-size: 12px; color: #3498db; text-decoration: none;'>[Lees]</a></div>"
+        html += f"<div style='margin-bottom: 10px;'><strong>[{art['source']}]</strong> {art['title']} <a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none;'>[Lees]</a></div>"
     return html + "</div>"
 
 if __name__ == "__main__":
     prio_data = run_scraper()
     
-    content = build_html_section("⭐ De Dagelijkse Recensies", prio_data['prio1'], "#e67e22")
+    content = build_html_section("⭐ Dagelijkse Recensies", prio_data['prio1'], "#e67e22")
     content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
     content += build_html_section("🎧 Podcasts & Verdieping", prio_data['prio3'], "#7f8c8d")
     
     if content:
-        requests.post("https://api.resend.com/emails", 
+        print("Mail versturen...")
+        r = requests.post("https://api.resend.com/emails", 
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
                 "from": EMAIL_FROM, 
                 "to": [EMAIL_RECEIVER], 
                 "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}", 
-                "html": f"<html><body style='font-family: Arial, sans-serif; line-height: 1.5; color: #333;'>{content}</body></html>"
+                "html": f"<html><body style='font-family: Arial, sans-serif; padding: 20px;'>{content}</body></html>"
             })
+        print(f"Resend status: {r.status_code}")
+    else:
+        print("Geen content gevonden, geen mail verstuurd.")
