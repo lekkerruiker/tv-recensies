@@ -30,17 +30,41 @@ def is_recent(entry):
 def get_prio_level(title, link):
     t = title.lower()
     l = link.lower()
-    if any(x in l for x in ['/televisie', '/zap', 'han-lips', 'maaike-bos']):
+    
+    # --- 1. VIP RECHTSSTREEKSE MATCHES (Recensies) ---
+    # We kijken naar URL-paden die specifiek voor TV-recensies zijn
+    if any(x in l for x in ['/televisie', '/zap', 'han-lips', 'maaike-bos', 'peereboom']):
         return 1
-    if any(x in t for x in ['tv-recensie', 'han lips', 'maaike bos', 'zap:']):
+    # Specifieke titels die op recensies duiden
+    if any(x in t for x in ['tv-recensie', 'han lips', 'maaike bos', 'zap:', 'bekeken:']):
         return 1
-    media_keywords = ['tv', 'televisie', 'kijkcijfer', 'npo', 'rtl', 'sbs', 'streaming', 'netflix', 'videoland']
-    if any(w in t or w in l for w in media_keywords):
-        return 2
+
+    # --- 2. HARD BLOCK (Voorkomen van ruis) ---
+    # Als deze woorden erin staan, negeren we het (tenzij het een VIP hierboven was)
+    exclude_words = ['klimaat', 'ecb', 'politiek', 'polder', 'asiel', 'oorlog', 'economie']
+    if any(x in t for x in exclude_words):
+        return 0
+
+    # --- 3. STRIKTE MEDIA CHECK (Geen Scunthorpe meer) ---
+    # We gebruiken r'\bword\b' om te zorgen dat het hele woorden zijn
+    # Dus 'NPO' matcht niet in 'inpoldering'
+    strict_keywords = [
+        r'\btv\b', r'\btelevisie\b', r'\bnpo\b', r'\brtl\b', r'\bsbs\b', 
+        r'\bvideoland\b', r'\bnetflix\b', r'\bstreaming\b', r'\bkijkcijfer',
+        r'\bpresentator\b', r'\bomroep\b', r'\bjinek\b', r'\blubach\b'
+    ]
+    
+    for pattern in strict_keywords:
+        if re.search(pattern, t) or re.search(pattern, l):
+            # Als Mr. Frank Visser erin staat, is het Prio 2 (zoals je voorbeeld)
+            if 'frank visser' in t:
+                return 2
+            return 2
+            
     return 0
 
 def main():
-    print("Starten van scraper...")
+    print("Starten van scraper met strikte filters...")
     all_articles = {'prio1': [], 'potential': []}
     seen = set()
     
@@ -53,6 +77,7 @@ def main():
                 link = entry.get('link')
                 if not link or link in seen: continue
                 if not is_recent(entry): continue
+                
                 prio = get_prio_level(entry.get('title', ''), link)
                 if prio > 0:
                     item = {'title': entry.get('title', '').strip(), 'link': link, 'source': name}
@@ -64,25 +89,33 @@ def main():
         except Exception as e:
             print(f"Fout bij {name}: {e}")
 
+    # E-mail genereren
     body = ""
-    for level, title, color in [('prio1', '⭐ Recensies', '#e67e22'), ('potential', '📺 Media Nieuws', '#2980b9')]:
+    sections = [
+        ('prio1', '⭐ Dagelijkse Recensies', '#e67e22'),
+        ('potential', '📺 Media Nieuws', '#2980b9')
+    ]
+    
+    for level, section_title, color in sections:
         if all_articles[level]:
-            body += f"<h2 style='color:{color}; border-bottom:1px solid {color};'>{title}</h2>"
+            body += f"<h2 style='color:{color}; border-bottom:1px solid {color}; padding-bottom:5px;'>{section_title}</h2>"
             for art in all_articles[level]:
-                body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
+                body += f"<div style='margin-bottom:15px;'><strong>[{art['source']}]</strong> {art['title']}<br>"
+                body += f"<a href='{art['link']}' style='color:#3498db;'>Lees artikel</a> | "
+                body += f"<a href='https://archive.is/{art['link']}' style='color:#7f8c8d;'>🔓 Archief</a></div>"
 
     if body:
         print("Mail versturen...")
-        res = requests.post("https://api.resend.com/emails", 
+        requests.post("https://api.resend.com/emails", 
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
                 "from": EMAIL_FROM, "to": [EMAIL_RECEIVER], 
                 "subject": f"Media Focus {datetime.now().strftime('%d-%m')}",
-                "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
+                "html": f"<html><body style='font-family:Arial, sans-serif; line-height:1.6; max-width:600px;'>{body}</body></html>"
             })
-        print(f"Status: {res.status_code}")
+        print("Klaar!")
     else:
-        print("Niets gevonden.")
+        print("Geen relevante artikelen gevonden vandaag.")
 
 if __name__ == "__main__":
     main()
