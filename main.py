@@ -9,63 +9,46 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
+# We gebruiken voor de Volkskrant een alternatieve URL-structuur die vaak beter werkt
 FEEDS = {
+    "Volkskrant": "https://www.volkskrant.nl/televisie/rss.xml",
     "Trouw": "https://www.trouw.nl/rss.xml",
     "Parool": "https://www.parool.nl/rss.xml",
     "Telegraaf": "https://www.telegraaf.nl/rss",
     "NRC": "https://www.nrc.nl/rss/"
 }
 
-# Uitgebreide headers om blokkades door de Volkskrant te voorkomen
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'nl,en-US;q=0.7,en;q=0.3',
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 }
 
-def get_volkskrant_content():
-    """Haalt artikelen direct van de Volkskrant TV-pagina."""
-    articles = []
-    # We proberen de TV-sectie direct
-    url = "https://www.volkskrant.nl/televisie"
-    try:
-        print("Poging Volkskrant scan...")
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.encoding = 'utf-8'
-        
-        # We zoeken naar de typische Volkskrant link-structuur
-        # Zoals: /televisie/lange-tijd-had-jorgen-raymann-last-van-divagedrag~bbba1a5d/
-        # En we pakken de titel die er vlak achter staat
-        matches = re.findall(r'href="(/[^"]+?~b[^"]+?)".*?>(.*?)<', r.text, re.DOTALL)
-        
-        for link, title in matches:
-            clean_title = re.sub('<[^<]+?>', '', title).strip()
-            if len(clean_title) < 10: continue # Skip te korte teksten (knoppen, etc)
-            
-            # Alleen toevoegen als het niet al in de lijst staat
-            full_link = f"https://www.volkskrant.nl{link}"
-            if not any(a['link'] == full_link for a in articles):
-                articles.append({
-                    'title': clean_title,
-                    'link': full_link,
-                    'source': 'Volkskrant'
-                })
-        print(f"Volkskrant scan klaar. {len(articles)} kandidaten gevonden.")
-    except Exception as e:
-        print(f"Volkskrant fout: {e}")
-    return articles
-
-def get_prio_level(title, link):
+def get_prio_level(title, link, source):
     t, l = title.lower(), link.lower()
-    # Prio 1: Recensies en bekende koppen
-    if any(x in l or x in t for x in ['/televisie', '/zap', 'han-lips', 'maaike-bos', 'peereboom', 'recensie']):
-        # Filter de onzin uit Prio 1
-        if not any(x in t for x in ['klimaat', 'ecb', 'polder', 'beurs', 'sport']):
-            return 1
-    # Prio 2: Media nieuws
-    if re.search(r'\b(tv|npo|rtl|sbs|videoland|netflix|streaming|omroep)\b', t):
-        if not any(x in t for x in ['klimaat', 'ecb', 'polder']):
+    
+    # --- STAP 1: HARDE BLOCKS (Tegen de boek/concert vervuiling) ---
+    # Als deze woorden erin staan, negeren we het ALTIJD (behalve als er 'tv' bij staat)
+    blocks = ['boekrecensie', 'concertrecensie', 'theater', 'literatuur', 'popmuziek', 'album', 'roman']
+    if any(x in t for x in blocks) and 'tv' not in t:
+        return 0
+
+    # --- STAP 2: PRIO 1 (De echte recensies) ---
+    # Specifieke Volkskrant check: moet in televisie sectie zitten
+    if source == "Volkskrant" and 'televisie' in l:
+        return 1
+        
+    # VIP namen en secties voor andere kranten
+    vip_names = ['han-lips', 'maaike-bos', 'peereboom', 'zap', 'lips-kijkt']
+    if any(x in l for x in vip_names) or any(x in t for x in ['tv-recensie', 'zap:', 'bekeken:']):
+        return 1
+
+    # --- STAP 3: PRIO 2 (Media nieuws) ---
+    # Gebruik \b voor hele woorden om 'inpoldering' te voorkomen
+    media_words = [r'\btv\b', r'\btelevisie\b', r'\bnpo\b', r'\brtl\b', r'\bsbs\b', r'\bvideoland\b', r'\bnetflix\b', r'\bstreaming\b']
+    if any(re.search(pattern, t) or re.search(pattern, l) for pattern in media_words):
+        # Extra check om klimaat/politiek ruis in Prio 2 te voorkomen
+        if not any(x in t for x in ['klimaat', 'ecb', 'polder', 'asiel']):
             return 2
+            
     return 0
 
 def main():
@@ -73,40 +56,42 @@ def main():
     all_prio2 = []
     seen = set()
 
-    # 1. De Volkskrant 'Deep Scan'
-    vk_raw = get_volkskrant_content()
-    for art in vk_raw:
-        prio = get_prio_level(art['title'], art['link'])
-        if prio > 0:
-            if prio == 1: all_prio1.append(art)
-            else: all_prio2.append(art)
-            seen.add(art['link'])
+    print("Starten van de herstelde scan...")
 
-    # 2. De rest via de vertrouwde RSS-methode
     for name, url in FEEDS.items():
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            feed = feedparser.parse(r.text)
+            # We downloaden de feed met een mobiele User-Agent (iPhone)
+            # Dit omzeilt vaak de zware desktop-blokkades van de Volkskrant
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            feed = feedparser.parse(resp.text)
+            
             for entry in feed.entries:
                 link = entry.get('link')
                 if not link or link in seen: continue
-                prio = get_prio_level(entry.get('title', ''), link)
+                
+                title = entry.get('title', '').strip()
+                prio = get_prio_level(title, link, name)
+                
                 if prio > 0:
-                    item = {'title': entry.get('title', '').strip(), 'link': link, 'source': name}
-                    if prio == 1: all_prio1.append(item)
-                    else: all_prio2.append(item)
+                    item = {'title': title, 'link': link, 'source': name}
+                    if prio == 1:
+                        all_prio1.append(item)
+                    else:
+                        all_prio2.append(item)
                     seen.add(link)
-        except: continue
+                    print(f"Gevonden [{name}]: {title}")
+        except Exception as e:
+            print(f"Fout bij {name}: {e}")
 
     # E-mail opbouw
     body = ""
     if all_prio1:
-        body += "<h2 style='color:#e67e22; border-bottom:1px dotted #e67e22;'>⭐ Dagelijkse Recensies</h2>"
+        body += "<h2 style='color:#e67e22; border-bottom:1px solid #e67e22;'>⭐ Dagelijkse Recensies</h2>"
         for art in all_prio1:
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees artikel</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
     
     if all_prio2:
-        body += "<h2 style='color:#2980b9; border-bottom:1px dotted #2980b9;'>📺 Media Nieuws</h2>"
+        body += "<h2 style='color:#2980b9; border-bottom:1px solid #2980b9;'>📺 Media Nieuws</h2>"
         for art in all_prio2:
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
 
@@ -116,8 +101,10 @@ def main():
             json={
                 "from": EMAIL_FROM, "to": [EMAIL_RECEIVER], 
                 "subject": f"Media Focus {datetime.now().strftime('%d-%m')}",
-                "html": f"<html><body style='font-family:sans-serif; max-width:600px;'>{body}</body></html>"
+                "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
+    else:
+        print("Geen relevante artikelen gevonden.")
 
 if __name__ == "__main__":
     main()
