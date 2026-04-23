@@ -1,0 +1,28 @@
+name: Daily Media Mail
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 08:00 CET = 06:00 UTC
+  workflow_dispatch:  # Handmatig triggeren voor testen
+
+jobs:
+  send-mail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests feedparser
+      
+      - name: Run scraper
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+        run: python scraper.py
