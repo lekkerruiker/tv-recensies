@@ -4,9 +4,8 @@ import feedparser
 from datetime import datetime, timedelta
 import json
 import re
-from typing import List, Dict
 
-# --- CONFIGURATIE (ongewijzigd) ---
+# --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
@@ -20,137 +19,115 @@ FEEDS = {
     "NRC": "https://www.nrc.nl/rss/"
 }
 
-# --- VERBETERDE FILTERS ---
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
 
-# Specifieke URL patronen voor recensies (Prio 1)
-# Toegevoegd: bredere patronen voor de Volkskrant en Parool
-PRIO1_URL_PATTERNS = [
-    r'/televisie', 
-    r'/recensie',
-    r'/media',
-    r'han-lips',
-    r'maaike-bos',
-    r'marcel-peereboom-voller',
-    r'marcel-bekijkt',
-    r'tv-column'
-]
+def is_recent(entry):
+    """Check of artikel van de laatste 48 uur is."""
+    pub = entry.get('published_parsed') or entry.get('updated_parsed')
+    if not pub: return True
+    return datetime(*pub[:6]) >= (datetime.now() - timedelta(hours=48))
 
-# Uitgesloten onderwerpen (iets ruimer om Scunthorpe te voorkomen)
-EXCLUDE_KEYWORDS = [
-    r'\bboek\b', r'\broman\b', r'\btheater\b', r'\btoneelstuk\b', r'\bmusical\b', 
-    r'\bmuseum\b', r'\bpolitiek\b', r'\bverkiezing', r'\binpoldering\b', r'\basiel\b'
-]
-
-def is_from_yesterday_or_today(entry) -> bool:
-    """Check of artikel recent is (laatste 48 uur voor meer marge)"""
-    try:
-        published = entry.get('published_parsed') or entry.get('updated_parsed')
-        if not published: return True
-        pub_date = datetime(*published[:6])
-        cutoff = datetime.now() - timedelta(hours=48)
-        return pub_date >= cutoff
-    except:
-        return True
-
-def is_media_related(title: str, url: str, source: str) -> bool:
-    """Bepaal of het media is. VOORRANG voor specifieke bron/sectie combinaties."""
-    text = f"{title.lower()} {url.lower()}"
+def get_prio_level(title, link, source):
+    """Bepaalt de categorie. Retouneert 1 (Recensie), 2 (Nieuws), 3 (Overig) of 0 (Negeren)."""
+    t = title.lower()
+    l = link.lower()
     
-    # 1. VIP Secties: Als het van deze URL's komt, is het ALTIJD media
-    if any(pattern in url.lower() for pattern in ['/televisie', '/zap', 'han-lips', 'maaike-bos']):
-        return True
+    # --- STAP 1: VIP SELECTIE (Altijd Prio 1) ---
+    # Als dit in de URL of titel staat, kijken we niet eens verder naar filters.
+    if any(x in l for x in ['/televisie', '/zap', 'han-lips', 'maaike-bos', 'marcel-peereboom-voller']):
+        return 1
+    if any(x in t for x in ['tv-recensie', 'tv-column', 'han lips', 'maaike bos']):
+        return 1
 
-    # 2. Harde uitsluiting (alleen als het GEEN VIP sectie is)
-    for pattern in EXCLUDE_KEYWORDS:
-        if re.search(pattern, text, re.IGNORECASE):
-            return False
-    
-    # 3. Algemene media trefwoorden
-    media_indicators = ['tv', 'televisie', 'radio', 'kijkcijfer', 'omroep', 'seri', 'netflix', 'videoland', 'npo', 'rtl', 'sbs']
-    if any(word in text for word in media_indicators):
-        return True
+    # --- STAP 2: UITSLUITEN (De brij wegfilteren) ---
+    # Alleen uitsluiten als het GEEN VIP is.
+    if any(x in t for x in ['podcast', 'luisterboek', 'filmrecensie', 'theater', 'concert']):
+        return 0
+
+    # --- STAP 3: MEDIA CHECK (Prio 2 of 3) ---
+    media_words = ['tv', 'televisie', 'kijkcijfers', 'npo', 'rtl', 'sbs', 'streaming', 'netflix', 'videoland', 'presentator', 'omroep', 'vandaag inside', 'jinek', 'beau', 'renze']
+    if any(w in t or w in l for w in media_words):
+        return 2 # Voorlopig 2, AI mag later verfijnen naar 3
         
-    return False
+    return 0
 
-def is_priority_1(url: str, title: str, source: str) -> bool:
-    """Check of dit de 'Heilige Graal' recensies zijn."""
-    url_l = url.lower()
-    title_l = title.lower()
+def scrape_feeds():
+    results = {'prio1': [], 'potential': []}
+    seen = set()
     
-    # De specifieke vangers
-    if "han-lips" in url_l or "han lips" in title_l: return True
-    if "maaike-bos" in url_l or "maaike bos" in title_l: return True
-    if source == "NRC" and ("/zap" in url_l or "zap:" in title_l): return True
-    if source == "Volkskrant" and "/televisie" in url_l: return True
-    
-    # Algemene recensie signalen
-    if any(sig in title_l for sig in ['tv-recensie', 'recensie:', 'bekeken:', 'column:']):
-        # Dubbele check: het moet wel over media gaan
-        if any(m in url_l or m in title_l for m in ['televisie', 'tv', 'serie', 'programma']):
-            return True
-
-    return False
-
-def scrape_feeds() -> Dict[str, List[Dict]]:
-    articles = {'prio1': [], 'potential': []}
-    seen_links = set()
-    
-    for source, feed_url in FEEDS.items():
-        print(f"Scannen: {source}...")
+    for name, url in FEEDS.items():
         try:
-            # We gebruiken een timeout en headers om blokkades te voorkomen
-            resp = requests.get(feed_url, headers=HEADERS, timeout=15)
-            feed = feedparser.parse(resp.content)
+            # We downloaden de feed handmatig om blokkades te voorkomen
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            feed = feedparser.parse(r.content)
             
             for entry in feed.entries:
-                link = entry.get('link', '')
-                if not link or link in seen_links: continue
+                link = entry.get('link')
+                if not link or link in seen: continue
+                if not is_recent(entry): continue
                 
-                title = entry.get('title', '').strip()
-                
-                if not is_from_yesterday_or_today(entry):
-                    continue
-                
-                if is_media_related(title, link, source):
-                    art = {'title': title, 'link': link, 'source': source}
-                    seen_links.add(link)
-                    
-                    if is_priority_1(link, title, source):
-                        articles['prio1'].append(art)
+                prio = get_prio_level(entry.get('title', ''), link, name)
+                if prio > 0:
+                    item = {'title': entry.get('title', '').strip(), 'link': link, 'source': name}
+                    if prio == 1:
+                        results['prio1'].append(item)
                     else:
-                        articles['potential'].append(art)
+                        results['potential'].append(item)
+                    seen.add(link)
         except Exception as e:
-            print(f"Fout bij {source}: {e}")
-            
-    return articles
+            print(f"Fout bij {name}: {e}")
+    return results
 
-# --- AI CLASSIFICATIE (Hetzelfde als jouw script, maar met foutafhandeling) ---
-def classify_with_ai(articles: List[Dict]) -> Dict[str, List[Dict]]:
-    if not articles: return {'prio2': [], 'prio3': []}
-    if not GEMINI_KEY: return {'prio2': articles, 'prio3': []}
-    
+def classify_with_ai(articles):
+    if not articles or not GEMINI_KEY:
+        return {'prio2': articles, 'prio3': []}
+        
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(articles)]
+    input_data = [{"id": i, "title": a['title']} for i, a in enumerate(articles)]
     
-    prompt = f"Classificeer deze media-artikelen in 'prio2' (nieuws/kijkcijfers) of 'prio3' (podcasts/interviews). Gooi artikelen die NIET over media gaan weg. JSON output: {{\"prio2\": [ids], \"prio3\": [ids]}}. Lijst: {json.dumps(input_data)}"
+    prompt = (
+        "Classificeer deze media-artikelen in 'prio2' (hard nieuws over TV/cijfers/zenders) "
+        "of 'prio3' (achtergrond/interviews). Gooi irrelevante artikelen (boeken/politiek) weg. "
+        f"JSON output: {{\"prio2\": [ids], \"prio3\": [ids]}}. Lijst: {json.dumps(input_data)}"
+    )
 
     try:
-        response = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
-        raw = response.json()['candidates'][0]['content']['parts'][0]['text']
-        cleaned = re.search(r'\{.*\}', raw, re.DOTALL).group()
-        json_match = json.loads(cleaned)
-        
+        res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=25)
+        raw = res.json()['candidates'][0]['content']['parts'][0]['text']
+        data = json.loads(re.search(r'\{.*\}', raw, re.DOTALL).group())
         return {
-            'prio2': [articles[i] for i in json_match.get('prio2', []) if i < len(articles)],
-            'prio3': [articles[i] for i in json_match.get('prio3', []) if i < len(articles)]
+            'prio2': [articles[i] for i in data.get('prio2', []) if i < len(articles)],
+            'prio3': [articles[i] for i in data.get('prio3', []) if i < len(articles)]
         }
     except:
         return {'prio2': articles, 'prio3': []}
 
-# --- EMAIL & MAIN (Grotendeels gelijk aan jouw script) ---
-def build_html_email(p1, p2, p3):
-    # (Houd hier je eigen HTML build functie aan, die ziet er goed uit)
-    # Zorg dat de archive.is links erin blijven!
-    pass
+def build_section(title, items, color):
+    if not items: return ""
+    html = f"<h2 style='color:{color}; border-bottom:1px solid {color};'>{title} ({len(items)})</h2>"
+    for art in items:
+        html += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
+        html += f"<a href='{art['link']}'>Direct</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
+    return html
 
-# ... (rest van je functies: send_email en main)
+def main():
+    data = scrape_feeds()
+    ai_data = classify_with_ai(data['potential'])
+    
+    body = build_section("⭐ Recensies", data['prio1'], "#e67e22")
+    body += build_section("📺 Media Nieuws", ai_data['prio2'], "#2980b9")
+    body += build_section("🎧 Achtergrond", ai_data['prio3'], "#7f8c8d")
+    
+    if data['prio1'] or ai_data['prio2'] or ai_data['prio3']:
+        requests.post("https://api.resend.com/emails", 
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": EMAIL_FROM, "to": [EMAIL_RECEIVER], 
+                "subject": f"Media Focus {datetime.now().strftime('%d-%m')}",
+                "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
+            })
+
+if __name__ == "__main__":
+    main()
