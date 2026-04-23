@@ -59,13 +59,12 @@ def scrape_nrc_media():
                     link = a['href']
                     if today_str in link or yesterday_str in link:
                         if not link.startswith('http'): link = "https://www.nrc.nl" + link
-                        if source_label == "NRC Zap" or has_exact_word(MEDIA_KEYWORDS, title):
-                            articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
+                        articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
         except: pass
     return articles
 
 def get_ai_prioritized_articles(articles):
-    # Splitsen: Prio 1 (Recensies) doen we hardcoded, de rest doet de AI
+    # Prio 1 labels die we hardcoded als belangrijkste markeren
     prio1_labels = ["Parool: Han Lips", "Trouw: Maaike Bos", "Volkskrant TV-Recensie", "NRC Zap"]
     
     prio1_list = [a for a in articles if a['source'] in prio1_labels]
@@ -78,11 +77,11 @@ def get_ai_prioritized_articles(articles):
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(others)]
     
     prompt = (
-        "Classificeer deze media-artikelen in TWEE groepen:\n"
-        "Groep 2 (NIEUWS): Hard nieuws over zenders (RTL, SBS, NPO), kijkcijfers, talkshows, presentatoren.\n"
-        "Groep 3 (OVERIG): Podcasts, achtergrondverhalen, interviews, Telegraaf Podcast, Trouw Podcast.\n"
-        "Belangrijk: Podcasts MOETEN in groep 3.\n"
-        "Geef ENKEL JSON terug: {\"prio2\": [ids], \"prio3\": [ids]}"
+        "Classificeer deze media-artikelen:\n"
+        "Groep 2 (NIEUWS): Hard nieuws over zenders (RTL, NPO), kijkcijfers, talkshows, media-industrie.\n"
+        "Groep 3 (OVERIG): Achtergronden, interviews en podcasts.\n"
+        "STRENG: Verwijder alles wat niet over media gaat.\n"
+        "Geef ENKEL JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
         f"Lijst: {json.dumps(input_data)}"
     )
     
@@ -93,72 +92,3 @@ def get_ai_prioritized_articles(articles):
             "prio1": prio1_list,
             "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
             "prio3": [others[i] for i in data.get("prio3", []) if i < len(others)]
-        }
-    except:
-        return {"prio1": prio1_list, "prio2": others, "prio3": []}
-
-def run_scraper():
-    all_found, seen_links = [], set()
-    for art in scrape_nrc_media():
-        if art['link'] not in seen_links:
-            all_found.append(art); seen_links.add(art['link'])
-
-    EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
-    for name, url in FEEDS.items():
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            for item in re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL):
-                t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
-                l_match = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
-                if not (t_match and l_match): continue
-                title, link = clean_text(t_match.group(1)), l_match.group(1).strip()
-                if link in seen_links: continue
-                
-                desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
-                snippet = clean_text(desc_match.group(1)) if desc_match else ""
-                full_lower = (title + " " + snippet + " " + link).lower()
-
-                if any(bad in title.lower() for bad in EXCLUDE_KEYWORDS): continue
-                
-                keep, source_label = False, name
-                has_critic = any(c in full_lower for c in CRITICS)
-                has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
-
-                if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower): source_label, keep = "Parool: Han Lips", True
-                elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower): source_label, keep = "Trouw: Maaike Bos", True
-                elif name == "Trouw" and "/podcasts/" in link.lower(): source_label, keep = "Trouw Podcast", True
-                elif name == "Volkskrant" and ("/televisie/" in link.lower() or "tv-recensie" in full_lower): source_label, keep = "Volkskrant TV-Recensie", True
-                elif name == "Telegraaf" and "/podcast/" in link.lower(): source_label, keep = "Telegraaf Podcast", True
-                elif name == "Telegraaf" and "entertainment/media" in link.lower(): source_label, keep = "Telegraaf Media", True
-
-                if not keep:
-                    if name == "Volkskrant" and "/cultuur-media/" in link.lower() and has_media_keyword: keep = True
-                    elif name == "Parool" and has_media_keyword: keep = True
-                    elif has_media_keyword or has_critic: keep = True
-
-                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']) and not has_critic: keep = False
-
-                if keep:
-                    all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
-                    seen_links.add(link)
-        except: continue
-    return get_ai_prioritized_articles(all_found)
-
-def build_html_section(title, articles, color):
-    if not articles: return ""
-    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3><ul style='padding:0;'>"
-    for art in articles:
-        html += f"""<li style='margin-bottom: 20px; list-style: none; border-left: 4px solid {color}; padding-left: 15px;'>
-            <strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br>
-            <p style='margin: 4px 0; color: #555; font-size: 14px;'>{art['snippet'][:160]}...</p>
-            <a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a></li>"""
-    return html + "</ul>"
-
-if __name__ == "__main__":
-    prio_data = run_scraper()
-    if any(prio_data.values()):
-        content = build_html_section("⭐ De Grote Vier (Recensies)", prio_data['prio1'], "#e67e22")
-        content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
-        content += build_html_section("🎧 Podcasts & Achtergrond", prio_data['prio3'], "#7f8c8d")
-        requests.post("https://api.resend.com/emails", headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={"from": EMAIL_FROM, "to": [EMAIL_RECEIVER], "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}", "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content}</body></html>"})
