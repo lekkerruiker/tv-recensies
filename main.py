@@ -23,7 +23,6 @@ FEEDS = {
 # Specifieke URL patronen voor recensies (Prio 1)
 PRIO1_URL_PATTERNS = [
     r'/televisie/',
-    r'/zap[^a-z]',  # ZAP maar niet 'zapper' of 'zapping'
     r'/recensie',
     r'/media.*recensie',
     r'han-lips',
@@ -38,25 +37,34 @@ RECENSIE_AUTEURS = [
     'angela de jong', 'marc van der linden'
 ]
 
-# Keywords voor media-filtering met word boundaries
-MEDIA_KEYWORDS_REGEX = [
-    r'\btv\b', r'\btelevisie\b', r'\bradio\b', r'\bkijkcijfer', 
-    r'\bpodcast\b', r'\bstreaming\b', r'\bnetflix\b', r'\bvideoland\b', 
-    r'\bnpo\b', r'\brtl\b', r'\bsbs\b', r'\bomroep', 
-    r'\bvandaag inside\b', r'\bjinek\b', r'\blubach\b', 
-    r'\bpresentator', r'\bprogramma', r'\bzender\b', r'\buitzending', 
-    r'\bserie[^n]\b', r'\btalkshow\b', r'\bavrotros\b', r'\bbnnvara\b', 
-    r'\bkro-ncrv\b', r'\bmax\b', r'\bvpro\b', r'\brego\b'
+# Woorden die aangeven dat het GEEN recensie is
+NOT_RECENSIE_KEYWORDS = [
+    'podcast', 'luisterboek', 'audioboek', 'hoorspel'
 ]
 
-# TV Programma's (hele woorden)
+# Keywords voor media-filtering met word boundaries (STRIKT)
+MEDIA_KEYWORDS_REGEX = [
+    r'\btv\b', r'\btelevisie\b', r'\bradio\b', r'\bkijkcijfer', 
+    r'\bstreaming\b', r'\bnetflix\b', r'\bvideoland\b', 
+    r'\bnpo\b', r'\brtl[ -]', r'\bsbs[ -]',  # RTL en SBS alleen met spatie/dash erachter
+    r'\bomroep', r'\bavrotros\b', r'\bbnnvara\b', 
+    r'\bkro-ncrv\b', r'\bvpro\b'
+]
+
+# TV Programma's en presentatoren (hele namen, specifiek)
 TV_PROGRAMS = [
     'vandaag inside', 'jinek', 'beau', 'renze', 'lubach', 
     'zondag met lubach', 'nieuwsuur', 'pauw', 'humberto', 'rtl nieuws',
     'nos journaal', 'een vandaag', 'op1', 'khalid en sophie',
     'boer zoekt vrouw', 'the voice', 'wie is de mol', 'heel holland bakt',
     'married at first sight', 'temptation island', 'gooische vrouwen',
-    'mocro maffia', 'undercover', 'penoza'
+    'mocro maffia', 'undercover', 'penoza', 'frank visser',
+    'mr frank visser', 'de rijdende rechter', 'utopia'
+]
+
+# TV/Media termen die ALLEEN relevant zijn in combinatie met context
+WEAK_MEDIA_KEYWORDS = [
+    'presentator', 'presentatrice', 'programma', 'zender', 'uitzending', 'serie'
 ]
 
 # Keywords die uitgesloten moeten worden
@@ -68,7 +76,9 @@ EXCLUDE_KEYWORDS = [
     r'\bfilm\b', r'\bbioscoop\b', r'\bcinema\b',
     r'\bpolitiek\b', r'\bverkiezing', r'\bkabinet\b', r'\btweede kamer\b',
     r'\bklimaat\b', r'\benergie\b', r'\bmilieu\b', r'\bnatuur\b',
-    r'\binpoldering\b', r'\bpolder\b', r'\bmarkermeer\b'
+    r'\binpoldering\b', r'\bpolder\b', r'\bmarkermeer\b',
+    r'\bescort\b', r'\basiel\b', r'\basielbeleid\b', r'\bvluchteling',
+    r'\bseks\b', r'\berotic', r'\bprostitut'
 ]
 
 def is_from_yesterday_or_today(published_date) -> bool:
@@ -89,61 +99,79 @@ def is_from_yesterday_or_today(published_date) -> bool:
         return True
 
 def is_media_related(title: str, url: str) -> bool:
-    """Check of artikel over media/TV/radio gaat met word boundaries"""
+    """Check of artikel over media/TV/radio gaat - STRIKT"""
     text = f"{title.lower()} {url.lower()}"
     
-    # Eerst exclusions checken (met word boundaries)
+    # EERST: Exclusions checken (hard block)
     for pattern in EXCLUDE_KEYWORDS:
         if re.search(pattern, text, re.IGNORECASE):
             return False
     
-    # Check TV programma's (exacte matches)
+    # Check TV programma's (exacte matches) - STERKSTE signaal
     for program in TV_PROGRAMS:
         if program.lower() in text:
             return True
     
-    # Check media keywords met regex word boundaries
+    # Check sterke media keywords met regex word boundaries
     for pattern in MEDIA_KEYWORDS_REGEX:
         if re.search(pattern, text, re.IGNORECASE):
             return True
     
+    # Zwakke keywords ALLEEN accepteren als er ook TV/media context is
+    has_weak_keyword = any(kw in text for kw in WEAK_MEDIA_KEYWORDS)
+    has_strong_context = any(ctx in text for ctx in ['televisie', 'tv', 'npo', 'rtl', 'sbs', 'omroep', 'zender'])
+    
+    if has_weak_keyword and has_strong_context:
+        return True
+    
     return False
 
 def is_priority_1(url: str, title: str, source: str) -> bool:
-    """Check of dit een recensie is (Prio 1)"""
+    """Check of dit een TV-recensie is (Prio 1) - GEEN podcasts!"""
     url_lower = url.lower()
     title_lower = title.lower()
+    
+    # EERST: Sluit podcasts ALTIJD uit
+    for keyword in NOT_RECENSIE_KEYWORDS:
+        if keyword in title_lower:
+            return False
+    
+    # NRC ZAP recensies - check op 'zap' in titel (vaak in nieuws URL)
+    if source == "NRC":
+        # Zap kolom heeft vaak "Zap:" in titel of vermeldt TV-programma
+        if 'zap' in title_lower or 'zap:' in title_lower:
+            print(f"    🎯 Prio 1 match (NRC Zap titel): {title[:60]}")
+            return True
+        # Of het zit in de /zap/ URL sectie
+        if '/zap/' in url_lower:
+            print(f"    🎯 Prio 1 match (NRC Zap URL): {title[:60]}")
+            return True
+    
+    # Volkskrant TV-recensies in /televisie/ sectie
+    if source == "Volkskrant" and "/televisie/" in url_lower:
+        print(f"    🎯 Prio 1 match (VK Televisie): {title[:60]}")
+        return True
     
     # Check URL patronen met regex
     for pattern in PRIO1_URL_PATTERNS:
         if re.search(pattern, url_lower):
-            print(f"    🎯 Prio 1 match (URL pattern): {title[:50]}")
+            print(f"    🎯 Prio 1 match (URL pattern '{pattern}'): {title[:60]}")
             return True
     
-    # Check op recensie-woorden in titel
+    # Check op recensie-woorden in titel (maar niet podcast!)
     recensie_signals = [
-        r'\brecensie\b', r'\bbekeken\b', r'\bzap:', r'\btv-recensie\b',
-        r'\bbesproken\b', r'\bgetest\b'
+        r'\btv-recensie\b', r'\bbekeken\b', r'\bbesproken:', r'\bgetest:'
     ]
     for signal in recensie_signals:
         if re.search(signal, title_lower):
-            print(f"    🎯 Prio 1 match (titel signal): {title[:50]}")
+            print(f"    🎯 Prio 1 match (titel signal): {title[:60]}")
             return True
     
-    # Check op bekende recensenten
+    # Check op bekende recensenten in titel of URL
     for auteur in RECENSIE_AUTEURS:
         if auteur in title_lower or auteur in url_lower:
-            print(f"    🎯 Prio 1 match (auteur {auteur}): {title[:50]}")
+            print(f"    🎯 Prio 1 match (auteur {auteur}): {title[:60]}")
             return True
-    
-    # Specifieke checks per bron
-    if source == "NRC" and "zap" in url_lower:
-        print(f"    🎯 Prio 1 match (NRC Zap): {title[:50]}")
-        return True
-    
-    if source == "Volkskrant" and "/televisie/" in url_lower:
-        print(f"    🎯 Prio 1 match (VK Televisie): {title[:50]}")
-        return True
     
     return False
 
