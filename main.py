@@ -19,8 +19,7 @@ FEEDS = {
 }
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
 MEDIA_KEYWORDS = [
@@ -35,39 +34,50 @@ def clean_text(text):
     text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
     return " ".join(text.split())
 
-def scrape_volkskrant_direct():
-    """Specifieke diepe scan voor de Volkskrant TV-pagina"""
+def scrape_direct_pages():
     articles = []
-    url = "https://www.volkskrant.nl/televisie/"
+    # Datumstempels voor NRC (vandaag en gisteren)
+    today_str = datetime.now().strftime("/%Y/%m/%d/")
+    yesterday_str = (datetime.now() - timedelta(days=1)).strftime("/%Y/%m/%d/")
+    
+    # 1. VOLKSKRANT (Geen datumfilter, want die is onbetrouwbaar)
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        vk_url = "https://www.volkskrant.nl/televisie/"
+        resp = requests.get(vk_url, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
-            # We zoeken met Regex direct in de HTML-broncode naar links
-            # Dit werkt vaak beter bij moderne sites dan BeautifulSoup alleen
-            links = re.findall(r'href="(/televisie/[^"]+?~b[^"]+?)"', resp.text)
-            # Ook titels proberen te vangen die vaak in de buurt staan
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            seen_local = set()
-            for link in links:
-                if link in seen_local: continue
-                full_link = f"https://www.volkskrant.nl{link}"
-                
-                # Probeer een titel te vinden voor deze specifieke link
-                anchor = soup.find('a', href=link)
-                title = anchor.get_text().strip() if anchor else "Volkskrant TV Artikel (Titel niet leesbaar)"
-                
-                if len(title) > 10:
-                    articles.append({
-                        "title": title, 
-                        "link": full_link, 
-                        "source": "Volkskrant TV-Recensie", 
-                        "snippet": "Direct gescraped via deep scan."
-                    })
-                    seen_local.add(link)
-                if len(articles) >= 5: break
-    except Exception as e:
-        print(f"DEBUG: Deep scan VK mislukt: {e}")
+            count = 0
+            for a in soup.find_all('a', href=True):
+                link = a['href']
+                title = a.get_text().strip()
+                if "/televisie/" in link and len(link) > 30 and len(title) > 20:
+                    full_link = f"https://www.volkskrant.nl{link}" if not link.startswith('http') else link
+                    articles.append({"title": title, "link": full_link, "source": "Volkskrant TV-Recensie", "snippet": "Direct van de TV-sectie."})
+                    count += 1
+                if count >= 3: break # Alleen de bovenste 3 (meest actueel)
+    except: pass
+
+    # 2. NRC ZAP (Strenge datumfilter tegen de lange lijst)
+    try:
+        nrc_url = "https://www.nrc.nl/onderwerp/zap/"
+        resp = requests.get(nrc_url, headers=HEADERS, timeout=15)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            seen_titles = set()
+            count = 0
+            for a in soup.find_all('a', href=True):
+                link = a['href']
+                title = a.get_text().strip()
+                # Check op datum in URL EN of we de titel vandaag al gezien hebben
+                if (today_str in link or yesterday_str in link) and len(title) > 15:
+                    if title not in seen_titles:
+                        full_link = f"https://www.nrc.nl{link}" if not link.startswith('http') else link
+                        articles.append({"title": title, "link": full_link, "source": "NRC Zap", "snippet": "Dagelijkse Zap-column."})
+                        seen_titles.add(title)
+                        count += 1
+                if count >= 3: break
+    except: pass
+
     return articles
 
 def get_ai_prioritized_articles(articles):
@@ -85,10 +95,10 @@ def get_ai_prioritized_articles(articles):
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(others)]
     
     prompt = (
-        "Sorteer deze media-artikelen:\n"
-        "Groep 2: Hard nieuws over TV, radio, kijkcijfers, zenders.\n"
-        "Groep 3: Podcasts en lange interviews.\n"
-        "STRENG: Verwijder alles wat NIET over media gaat (geen algemene cultuur).\n"
+        "Sorteer media-artikelen:\n"
+        "Groep 2: Hard nieuws (TV, radio, kijkcijfers).\n"
+        "Groep 3: Achtergrond en podcasts.\n"
+        "STRENG: Verwijder alles wat niet over media gaat.\n"
         "JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
         f"Lijst: {json.dumps(input_data)}"
     )
@@ -107,24 +117,12 @@ def get_ai_prioritized_articles(articles):
 def run_scraper():
     all_found, seen_links = [], set()
     
-    # 1. Volkskrant Deep Scan
-    for art in scrape_volkskrant_direct():
+    # 1. Belangrijkste artikelen (VK & NRC)
+    for art in scrape_direct_pages():
         if art['link'] not in seen_links:
             all_found.append(art); seen_links.add(art['link'])
 
-    # 2. NRC Zap (Blijft via RSS/directe pagina meestal goed gaan)
-    try:
-        resp = requests.get("https://www.nrc.nl/onderwerp/zap/", headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        for a in soup.find_all('a', href=re.compile(r'/2026/')):
-            link = a['href']
-            full_link = f"https://www.nrc.nl{link}" if not link.startswith('http') else link
-            if full_link not in seen_links:
-                all_found.append({"title": a.get_text().strip(), "link": full_link, "source": "NRC Zap", "snippet": "Nieuws uit NRC Zap"})
-                seen_links.add(full_link)
-    except: pass
-
-    # 3. RSS Feeds (Vangnet)
+    # 2. RSS Feeds (Vangnet voor anderen)
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -137,17 +135,18 @@ def run_scraper():
                 
                 t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
                 title = clean_text(t_match.group(1)) if t_match else "Geen titel"
-                
-                # Check voor Volkskrant TV in RSS
-                if "volkskrant.nl" in link and "/televisie/" in link:
-                    all_found.append({"title": title, "link": link, "source": "Volkskrant TV-Recensie", "snippet": "Gevonden via RSS vanger."})
-                    seen_links.add(link)
-                # Overige logica (Han Lips, Maaike Bos, etc.)
-                elif "han-lips" in link or "han lips" in title.lower():
+                full_lower = (title + " " + link).lower()
+
+                # Prio 1 vangers
+                if name == "Parool" and ("han-lips" in link or "han lips" in full_lower):
                     all_found.append({"title": title, "link": link, "source": "Parool: Han Lips", "snippet": "TV-column Parool"})
                     seen_links.add(link)
-                elif "maaike-bos" in link or "maaike bos" in title.lower():
+                elif name == "Trouw" and ("maaike-bos" in link or "maaike bos" in full_lower):
                     all_found.append({"title": title, "link": link, "source": "Trouw: Maaike Bos", "snippet": "TV-recensie Trouw"})
+                    seen_links.add(link)
+                elif any(word in full_lower for word in MEDIA_KEYWORDS):
+                    source_label = f"{name} Podcast" if "/podcast" in link else name
+                    all_found.append({"title": title, "link": link, "source": source_label, "snippet": "Gevonden via RSS."})
                     seen_links.add(link)
         except: continue
             
