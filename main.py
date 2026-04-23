@@ -10,7 +10,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-# We focussen nu 100% op de RSS-feeds omdat de directe sites ons blokkeren
+# We gebruiken de meest stabiele RSS-feeds
 FEEDS = {
     "Volkskrant": "https://www.volkskrant.nl/rss.xml",
     "Trouw": "https://www.trouw.nl/rss.xml",
@@ -25,49 +25,52 @@ HEADERS = {
 
 def clean_text(text):
     if not text: return ""
+    # Verwijder CDATA, HTML tags en overtollige witruimte
     text = re.sub(r'<!\[CDATA\[|\]\]>|<[^>]+?>', '', text)
     return " ".join(text.split())
 
-def get_ai_prioritized_articles(articles):
-    # Splits de lijst in "VIP" (Prio 1) en de rest voor de AI
-    prio1_list = [a for a in articles if a['prio_override']]
-    others = [a for a in articles if not a['prio_override']]
-
-    if not others:
-        return {"prio1": prio1_list, "prio2": [], "prio3": []}
+def get_ai_decision(articles):
+    """Laat de AI bepalen wat Prio 1, 2 of 3 is, of verwijderd moet worden."""
+    if not articles:
+        return {"prio1": [], "prio2": [], "prio3": []}
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(others)]
+    
+    input_data = [{"id": i, "title": a['title'], "source": a['source'], "link": a['link']} for i, a in enumerate(articles)]
     
     prompt = (
-        "Je bent een media-expert. Filter deze nieuwslijst.\n"
-        "Groep 2: Hard nieuws over TV-programma's, kijkcijfers, presentatoren en zenders.\n"
-        "Groep 3: Media-podcasts en diepgaande interviews met TV-makers.\n"
-        "VERWIJDER STRENG: Alles wat niet met TV/Radio/Streaming te maken heeft. Geen algemene cultuur, geen boeken, geen politiek.\n"
-        f"Lijst: {json.dumps(input_data)}\n"
-        "Antwoord enkel met JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
+        "Je bent een media-expert die een dagelijkse nieuwsbrief samenstelt. Sorteer deze artikelen:\n\n"
+        "Groep 1 (ORANJE - Prio 1): Dagelijkse TV-recensies (zoals Han Lips, Maaike Bos, de Zap-column van NRC, of TV-recensies van de Volkskrant).\n"
+        "Groep 2 (BLAUW - Prio 2): Hard nieuws over de media-industrie, kijkcijfers, NPO/RTL updates en presentatoren.\n"
+        "Groep 3 (GRIJS - Prio 3): Media-podcasts en lange interviews met TV-makers.\n\n"
+        "VERWIJDER STRENG: Alles wat NIET met TV, Radio of Streaming te maken heeft. Geen algemene cultuur, boeken, kunst of politiek.\n"
+        f"Lijst: {json.dumps(input_data)}\n\n"
+        "Geef ENKEL een JSON terug in dit formaat: {\"prio1\": [ids], \"prio2\": [ids], \"prio3\": [ids]}"
     )
     
     try:
-        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
-        res_json = resp.json()
-        raw_text = res_json['candidates'][0]['content']['parts'][0]['text']
-        data = json.loads(re.search(r'\{.*\}', raw_text, re.DOTALL).group())
+        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=25)
+        raw_response = resp.json()['candidates'][0]['content']['parts'][0]['text']
+        data = json.loads(re.search(r'\{.*\}', raw_response, re.DOTALL).group())
+        
         return {
-            "prio1": prio1_list,
-            "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
-            "prio3": [others[i] for i in data.get("prio3", []) if i < len(others)]
+            "prio1": [articles[i] for i in data.get("prio1", []) if i < len(articles)],
+            "prio2": [articles[i] for i in data.get("prio2", []) if i < len(articles)],
+            "prio3": [articles[i] for i in data.get("prio3", []) if i < len(articles)]
         }
-    except:
-        return {"prio1": prio1_list, "prio2": [], "prio3": []}
+    except Exception as e:
+        print(f"AI error: {e}")
+        # Fallback: alles in prio 2 als de AI faalt
+        return {"prio1": [], "prio2": articles, "prio3": []}
 
 def run_scraper():
-    all_found, seen_links = [], set()
+    all_potential = []
+    seen_links = set()
     
+    # We vangen ALLES uit de RSS feeds van de laatste 24-48 uur
     for name, url in FEEDS.items():
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            # We knippen de RSS handmatig op om CDATA en vreemde tekens beter te vangen
+            resp = requests.get(url, headers=HEADERS, timeout=15)
             items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
             
             for item in items:
@@ -78,52 +81,30 @@ def run_scraper():
                 
                 t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
                 title = clean_text(t_match.group(1)) if t_match else ""
-                
-                full_lower = (title + " " + link).lower()
-                is_prio = False
-                source_label = name
 
-                # VIP LOGICA (Wat moet ALTIJD in oranje?)
-                # 1. Volkskrant TV
-                if "volkskrant.nl" in link and "/televisie" in link:
-                    source_label, is_prio = "Volkskrant TV", True
-                # 2. NRC Zap
-                elif "nrc.nl" in link and "/zap" in link:
-                    source_label, is_prio = "NRC Zap", True
-                # 3. Han Lips
-                elif "han-lips" in link or "han lips" in title.lower():
-                    source_label, is_prio = "Parool: Han Lips", True
-                # 4. Maaike Bos
-                elif "maaike-bos" in link or "maaike bos" in title.lower():
-                    source_label, is_prio = "Trouw: Maaike Bos", True
-                
-                # Check of het überhaupt media-relevant is (voor de rest)
-                media_keywords = ['tv', 'televisie', 'radio', 'kijkcijfers', 'podcast', 'presentator', 'streaming', 'netflix', 'videoland']
-                is_media = any(kw in full_lower for kw in media_keywords)
-
-                if is_prio or is_media:
-                    all_found.append({
-                        "title": title, 
-                        "link": link, 
-                        "source": source_label, 
-                        "prio_override": is_prio
-                    })
+                # We sturen een ruime selectie naar de AI (alles wat media-gerelateerd LIJKT)
+                # We kijken naar woorden in de titel OF de URL
+                media_triggers = ['tv', 'televisie', 'radio', 'kijkcijfers', 'podcast', 'streaming', 'netflix', 'zap', 'lips', 'bos', 'recensie', 'beeldbuis']
+                if any(word in (title.lower() + link.lower()) for word in media_triggers):
+                    all_potential.append({"title": title, "link": link, "source": name})
                     seen_links.add(link)
-        except: continue
+        except Exception as e:
+            print(f"Feed error {name}: {e}")
             
-    return get_ai_prioritized_articles(all_found)
+    return get_ai_decision(all_potential)
 
 def build_html_section(title, articles, color):
     if not articles: return ""
     html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3>"
     for art in articles:
+        # Gebruik archive.is om betaalmuren te omzeilen
         html += f"<p style='margin-bottom: 12px;'><strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br><a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none; font-size: 13px;'>🔓 Lees artikel</a></p>"
     return html
 
 if __name__ == "__main__":
     prio_data = run_scraper()
     
-    content = build_html_section("⭐ Belangrijkste Recensies", prio_data['prio1'], "#e67e22")
+    content = build_html_section("⭐ De Dagelijkse Recensies", prio_data['prio1'], "#e67e22")
     content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
     content += build_html_section("🎧 Podcasts & Verdieping", prio_data['prio3'], "#7f8c8d")
     
