@@ -52,24 +52,39 @@ def scrape_direct_pages():
     today_str = datetime.now().strftime("/%Y/%m/%d/")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("/%Y/%m/%d/")
     
+    print(f"DEBUG: Start direct scrape...")
+
     for source_label, url in DIRECT_SCRAPE_URLS:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=15)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
+                found_on_page = 0
                 for a in soup.find_all('a', href=True):
                     link = a['href']
                     title = a.get_text().strip()
-                    if len(title) < 15: continue 
+                    if len(title) < 20: continue 
                     
-                    if today_str in link or yesterday_str in link:
-                        full_link = link if link.startswith('http') else f"https://www.{'nrc.nl' if 'nrc' in url else 'volkskrant.nl'}{link}"
-                        
-                        if source_label == "NRC Cultuur" and not has_exact_word(MEDIA_KEYWORDS, title):
-                            continue
-                            
-                        articles.append({"title": title, "link": full_link, "source": source_label, "snippet": f"Direct gescraped van {source_label}"})
-        except: pass
+                    full_link = link if link.startswith('http') else f"https://www.{'nrc.nl' if 'nrc' in url else 'volkskrant.nl'}{link}"
+
+                    # SPECIFIEK VOOR VOLKSKRANT TV: Geen datum-check, want recensies zijn vaak van gisteravond
+                    if "volkskrant.nl/televisie" in url:
+                        if "/televisie/" in link and "~b" in link:
+                            articles.append({"title": title, "link": full_link, "source": source_label, "snippet": "Gescraped van de TV-sectie."})
+                            found_on_page += 1
+                    
+                    # VOOR NRC: Wel datum-check om oude cultuur-artikelen te mijden
+                    elif "nrc.nl" in url:
+                        if today_str in link or yesterday_str in link:
+                            if source_label == "NRC Cultuur" and not has_exact_word(MEDIA_KEYWORDS, title):
+                                continue
+                            articles.append({"title": title, "link": full_link, "source": source_label, "snippet": "Gescraped van NRC."})
+                            found_on_page += 1
+                    
+                    if found_on_page >= 8: break 
+                print(f"DEBUG: {source_label} - {found_on_page} artikelen gevonden.")
+        except Exception as e:
+            print(f"DEBUG: Fout bij direct scrape {source_label}: {e}")
     return articles
 
 def get_ai_prioritized_articles(articles):
@@ -77,17 +92,20 @@ def get_ai_prioritized_articles(articles):
     prio1_list = [a for a in articles if a['source'] in prio1_labels]
     others = [a for a in articles if a['source'] not in prio1_labels]
 
-    if not GEMINI_KEY or not others:
+    if not others:
+        return {"prio1": prio1_list, "prio2": [], "prio3": []}
+    
+    if not GEMINI_KEY:
         return {"prio1": prio1_list, "prio2": others, "prio3": []}
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(others)]
     
     prompt = (
-        "Je bent een filter voor een media-expert. Sorteer de lijst strikt:\n"
+        "Je bent een filter voor een media-expert. Sorteer deze lijst strikt:\n"
         "Groep 2 (NIEUWS): Hard nieuws over TV-zenders, streaming, radio, kijkcijfers en presentatoren.\n"
-        "Groep 3 (OVERIG): Media-gerelateerde podcasts, achtergrond-verhalen over media, en diepte-interviews.\n"
-        "VERWIJDER STRENG: Boeken, theater, musea, concertrecensies en algemene cultuur zonder link naar TV/Radio. Als de link er wel is mogen ze dus wél mee.\n"
+        "Groep 3 (OVERIG): Media-gerelateerde podcasts, achtergrondverhalen over de media-industrie en diepte-interviews met TV-makers.\n"
+        "VERWIJDER STRENG: Boeken, theater, musea, concertrecensies, beeldende kunst en algemene cultuur zonder directe link naar TV of Radio.\n"
         "Geef ENKEL JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
         f"Lijst: {json.dumps(input_data)}"
     )
@@ -101,31 +119,31 @@ def get_ai_prioritized_articles(articles):
             "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
             "prio3": [others[i] for i in data.get("prio3", []) if i < len(others)]
         }
-    except:
+    except Exception as e:
+        print(f"DEBUG: AI Error: {e}")
         return {"prio1": prio1_list, "prio2": others, "prio3": []}
 
 def run_scraper():
     all_found, seen_links = [], set()
     
-    # 1. BELANGRIJK: Eerst de direct scrape (zodat we de labels forceren)
+    # 1. Directe pagina's eerst
     for art in scrape_direct_pages():
         if art['link'] not in seen_links:
             all_found.append(art)
             seen_links.add(art['link'])
 
+    # 2. RSS Feeds daarna
     EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
-    
-    # 2. Dan de RSS feeds
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
-            for item in re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL):
+            items = re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL)
+            for item in items:
                 t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
                 l_match = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
                 if not (t_match and l_match): continue
                 title, link = clean_text(t_match.group(1)), l_match.group(1).strip()
                 
-                # Check of we dit artikel al hebben (via direct scrape)
                 if link in seen_links: continue
                 
                 desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
@@ -137,7 +155,7 @@ def run_scraper():
                 keep, source_label = False, name
                 has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
 
-                # FORCEREN: Als VK artikel in /televisie/ staat, is het Prio 1
+                # Label forceren voor belangrijke bronnen
                 if name == "Volkskrant" and "/televisie/" in link.lower():
                     source_label, keep = "Volkskrant TV-Recensie", True
                 elif name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
@@ -152,19 +170,21 @@ def run_scraper():
                 elif has_media_keyword:
                     keep = True
 
-                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']): keep = False
+                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
+                    if not any(c in full_lower for c in ['lips', 'maaike bos']):
+                        keep = False
 
                 if keep:
                     all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
                     seen_links.add(link)
         except: continue
+            
     return get_ai_prioritized_articles(all_found)
 
 def build_html_section(title, articles, color):
     if not articles: return ""
     html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3><ul style='padding:0;'>"
     for art in articles:
-        # Gebruik archive.is om paywalls te omzeilen
         archive_link = f"https://archive.is/{art['link']}"
         html += f"""<li style='margin-bottom: 20px; list-style: none; border-left: 4px solid {color}; padding-left: 15px;'>
             <strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br>
@@ -174,7 +194,9 @@ def build_html_section(title, articles, color):
 
 if __name__ == "__main__":
     prio_data = run_scraper()
-    if any(prio_data.values()):
+    totaal = len(prio_data['prio1']) + len(prio_data['prio2']) + len(prio_data['prio3'])
+    
+    if totaal > 0:
         content = build_html_section("⭐ Belangrijkste artikelen", prio_data['prio1'], "#e67e22")
         content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
         content += build_html_section("🎧 Podcasts & Achtergrond", prio_data['prio3'], "#7f8c8d")
@@ -189,3 +211,6 @@ if __name__ == "__main__":
                 "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content}</body></html>"
             }
         )
+        print(f"DEBUG: Mail verstuurd met {totaal} artikelen.")
+    else:
+        print("DEBUG: Geen artikelen gevonden.")
