@@ -92,3 +92,80 @@ def get_ai_prioritized_articles(articles):
             "prio1": prio1_list,
             "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
             "prio3": [others[i] for i in data.get("prio3", []) if i < len(others)]
+        }
+    except:
+        return {"prio1": prio1_list, "prio2": others, "prio3": []}
+
+def run_scraper():
+    all_found, seen_links = [], set()
+    for art in scrape_nrc_media():
+        if art['link'] not in seen_links:
+            all_found.append(art); seen_links.add(art['link'])
+
+    EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
+    for name, url in FEEDS.items():
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            for item in re.findall(r'<item>(.*?)</item>', resp.text, re.DOTALL):
+                t_match = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
+                l_match = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
+                if not (t_match and l_match): continue
+                title, link = clean_text(t_match.group(1)), l_match.group(1).strip()
+                if link in seen_links: continue
+                
+                desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
+                snippet = clean_text(desc_match.group(1)) if desc_match else ""
+                full_lower = (title + " " + snippet + " " + link).lower()
+
+                if any(bad in title.lower() for bad in EXCLUDE_KEYWORDS): continue
+                
+                keep, source_label = False, name
+                has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
+                has_critic = any(c in full_lower for c in CRITICS)
+
+                # --- VOLKSKRANT FIX: ALLES IN /TELEVISIE/ IS PRIO 1 ---
+                if name == "Volkskrant" and "/televisie/" in link.lower():
+                    source_label, keep = "Volkskrant TV-Recensie", True
+                
+                if not keep:
+                    if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
+                        source_label, keep = "Parool: Han Lips", True
+                    elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
+                        source_label, keep = "Trouw: Maaike Bos", True
+                    elif ("/podcast/" in link.lower() or "/podcasts/" in link.lower()):
+                        # Podcast filter: Alleen doorlaten als het over media gaat
+                        if has_media_keyword or has_critic:
+                            source_label, keep = f"{name} Podcast", True
+                    elif name == "Telegraaf" and "entertainment/media" in link.lower():
+                        source_label, keep = "Telegraaf Media", True
+                    elif has_media_keyword or has_critic:
+                        keep = True
+
+                # Harde blokkades voor nieuws-ruis
+                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']) and not has_critic:
+                    keep = False
+
+                if keep:
+                    all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
+                    seen_links.add(link)
+        except: continue
+    return get_ai_prioritized_articles(all_found)
+
+def build_html_section(title, articles, color):
+    if not articles: return ""
+    html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3><ul style='padding:0;'>"
+    for art in articles:
+        html += f"""<li style='margin-bottom: 20px; list-style: none; border-left: 4px solid {color}; padding-left: 15px;'>
+            <strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br>
+            <p style='margin: 4px 0; color: #555; font-size: 14px;'>{art['snippet'][:160]}...</p>
+            <a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a></li>"""
+    return html + "</ul>"
+
+if __name__ == "__main__":
+    prio_data = run_scraper()
+    if any(prio_data.values()):
+        content = build_html_section("⭐ Belangrijkste artikelen", prio_data['prio1'], "#e67e22")
+        content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
+        content += build_html_section("🎧 Podcasts & Achtergrond", prio_data['prio3'], "#7f8c8d")
+        requests.post("https://api.resend.com/emails", headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={"from": EMAIL_FROM, "to": [EMAIL_RECEIVER], "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}", "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content}</body></html>"})
