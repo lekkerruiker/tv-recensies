@@ -60,28 +60,34 @@ def scrape_direct_pages():
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 found_on_page = 0
+                
+                # We zoeken breed naar alle links die naar artikelen kunnen leiden
                 for a in soup.find_all('a', href=True):
                     link = a['href']
                     title = a.get_text().strip()
-                    if len(title) < 20: continue 
+                    
+                    # Skip hele korte teksten (menu-items)
+                    if len(title) < 15: continue 
                     
                     full_link = link if link.startswith('http') else f"https://www.{'nrc.nl' if 'nrc' in url else 'volkskrant.nl'}{link}"
 
-                    # SPECIFIEK VOOR VOLKSKRANT TV: Geen datum-check, want recensies zijn vaak van gisteravond
+                    # VOLKSKRANT TELEVISIE: We pakken alles wat /televisie/ in de URL heeft
                     if "volkskrant.nl/televisie" in url:
-                        if "/televisie/" in link and "~b" in link:
-                            articles.append({"title": title, "link": full_link, "source": source_label, "snippet": "Gescraped van de TV-sectie."})
+                        # Filter op patronen die op artikelen lijken, skip de sectie-header zelf
+                        if "/televisie/" in link and len(link) > 30: 
+                            articles.append({"title": title, "link": full_link, "source": source_label, "snippet": "Direct van de TV-sectie."})
                             found_on_page += 1
+                            print(f"DEBUG: VK Gevonden: {title}")
                     
-                    # VOOR NRC: Wel datum-check om oude cultuur-artikelen te mijden
+                    # NRC: Datum-check blijft hier belangrijk tegen oude cultuur-bagage
                     elif "nrc.nl" in url:
                         if today_str in link or yesterday_str in link:
                             if source_label == "NRC Cultuur" and not has_exact_word(MEDIA_KEYWORDS, title):
                                 continue
-                            articles.append({"title": title, "link": full_link, "source": source_label, "snippet": "Gescraped van NRC."})
+                            articles.append({"title": title, "link": full_link, "source": source_label, "snippet": "Direct van NRC."})
                             found_on_page += 1
                     
-                    if found_on_page >= 8: break 
+                    if found_on_page >= 10: break # Iets ruimer pakken
                 print(f"DEBUG: {source_label} - {found_on_page} artikelen gevonden.")
         except Exception as e:
             print(f"DEBUG: Fout bij direct scrape {source_label}: {e}")
@@ -104,8 +110,8 @@ def get_ai_prioritized_articles(articles):
     prompt = (
         "Je bent een filter voor een media-expert. Sorteer deze lijst strikt:\n"
         "Groep 2 (NIEUWS): Hard nieuws over TV-zenders, streaming, radio, kijkcijfers en presentatoren.\n"
-        "Groep 3 (OVERIG): Media-gerelateerde podcasts, achtergrondverhalen over de media-industrie en diepte-interviews met TV-makers.\n"
-        "VERWIJDER STRENG: Boeken, theater, musea, concertrecensies, beeldende kunst en algemene cultuur zonder directe link naar TV of Radio.\n"
+        "Groep 3 (OVERIG): Media-gerelateerde podcasts, achtergrondverhalen over de media-industrie en diepte-interviews.\n"
+        "VERWIJDER STRENG: Boeken, theater, musea, concerten en algemene cultuur zonder link naar TV of Radio.\n"
         "Geef ENKEL JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
         f"Lijst: {json.dumps(input_data)}"
     )
@@ -119,20 +125,19 @@ def get_ai_prioritized_articles(articles):
             "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
             "prio3": [others[i] for i in data.get("prio3", []) if i < len(others)]
         }
-    except Exception as e:
-        print(f"DEBUG: AI Error: {e}")
+    except:
         return {"prio1": prio1_list, "prio2": others, "prio3": []}
 
 def run_scraper():
     all_found, seen_links = [], set()
     
-    # 1. Directe pagina's eerst
+    # 1. Directe pagina's
     for art in scrape_direct_pages():
         if art['link'] not in seen_links:
             all_found.append(art)
             seen_links.add(art['link'])
 
-    # 2. RSS Feeds daarna
+    # 2. RSS Feeds
     EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
     for name, url in FEEDS.items():
         try:
@@ -155,24 +160,19 @@ def run_scraper():
                 keep, source_label = False, name
                 has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
 
-                # Label forceren voor belangrijke bronnen
-                if name == "Volkskrant" and "/televisie/" in link.lower():
+                # Labels forceren
+                if "volkskrant.nl/televisie" in link.lower():
                     source_label, keep = "Volkskrant TV-Recensie", True
                 elif name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
                     source_label, keep = "Parool: Han Lips", True
                 elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
                     source_label, keep = "Trouw: Maaike Bos", True
-                elif ("/podcast/" in link.lower() or "/podcasts/" in link.lower()):
-                    if has_media_keyword:
-                        source_label, keep = f"{name} Podcast", True
+                elif ("/podcast/" in link.lower() or "/podcasts/" in link.lower()) and has_media_keyword:
+                    source_label, keep = f"{name} Podcast", True
                 elif name == "Telegraaf" and "entertainment/media" in link.lower():
                     source_label, keep = "Telegraaf Media", True
                 elif has_media_keyword:
                     keep = True
-
-                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']):
-                    if not any(c in full_lower for c in ['lips', 'maaike bos']):
-                        keep = False
 
                 if keep:
                     all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
@@ -205,12 +205,8 @@ if __name__ == "__main__":
             "https://api.resend.com/emails", 
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
-                "from": EMAIL_FROM, 
-                "to": [EMAIL_RECEIVER], 
+                "from": EMAIL_FROM, "to": [EMAIL_RECEIVER], 
                 "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}", 
                 "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content}</body></html>"
             }
         )
-        print(f"DEBUG: Mail verstuurd met {totaal} artikelen.")
-    else:
-        print("DEBUG: Geen artikelen gevonden.")
