@@ -2,16 +2,15 @@ import os
 import requests
 import feedparser
 from datetime import datetime, timedelta
-import json
 import re
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
 FEEDS = {
+    "Volkskrant": "https://www.volkskrant.nl/rss.xml",
     "Trouw": "https://www.trouw.nl/rss.xml",
     "Parool": "https://www.parool.nl/rss.xml",
     "Telegraaf": "https://www.telegraaf.nl/rss",
@@ -22,100 +21,85 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-def get_volkskrant_via_gemini():
-    """Haalt de tag-pagina op en laat Gemini de relevante TV-artikelen eruit vissen."""
-    url = "https://www.volkskrant.nl/tag/televisie"
-    articles = []
-    try:
-        print("Scannen van Volkskrant Tag-pagina...")
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        # We halen alle links en titels uit de HTML met een simpele regex
-        matches = re.findall(r'href="(/[^"]+?~b[^"]+?)".*?><h[^>]*>(.*?)</h', r.text, re.DOTALL)
-        
-        candidates = []
-        for link, title in matches[:15]: # De laatste 15 artikelen
-            clean_title = re.sub('<[^<]+?>', '', title).strip()
-            candidates.append({"title": clean_title, "link": f"https://www.volkskrant.nl{link}"})
+def is_recent(entry):
+    pub = entry.get('published_parsed') or entry.get('updated_parsed')
+    if not pub: return True
+    # Ruime marge van 48 uur om niets te missen
+    return datetime(*pub[:6]) >= (datetime.now() - timedelta(hours=48))
 
-        if not candidates or not GEMINI_KEY:
-            return []
-
-        # Gemini vragen om te filteren
-        prompt = f"""Hieronder staat een lijst met artikelen van de Volkskrant tag-pagina 'televisie'. 
-        Selecteer ALLEEN de artikelen die echt gaan over TV-recensies, TV-programma's, talkshows of streaming (zoals Netflix/Videoland).
-        Verwijder artikelen over boeken, algemene politiek, sport (tenzij het over de uitzending gaat) of klimaat.
-        
-        ARTIKELEN:
-        {json.dumps(candidates)}
-        
-        Antwoord in EXACT dit JSON formaat:
-        {{"selected": [{"title": "...", "link": "..."}]}}"""
-
-        gem_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-        res = requests.post(gem_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
-        raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-        # JSON opschonen van markdown backticks
-        clean_json = re.search(r'\{.*\}', raw_text, re.DOTALL).group()
-        articles = json.loads(clean_json).get('selected', [])
-        
-        for a in articles: a['source'] = 'Volkskrant'
-        print(f"  Gemini heeft {len(articles)} relevante VK artikelen gevonden.")
-    except Exception as e:
-        print(f"Fout bij Volkskrant/Gemini check: {e}")
-    return articles
-
-def get_prio_level(title, link):
+def get_prio_level(title, link, source):
     t, l = title.lower(), link.lower()
-    # Prio 1 voor bekende secties en namen
-    if any(x in l for x in ['/zap', 'han-lips', 'maaike-bos', 'peereboom']): return 1
-    if any(x in t for x in ['tv-recensie', 'han lips', 'maaike bos', 'zap:', 'bekeken:']): return 1
-    # Prio 2 voor algemeen media nieuws
-    if re.search(r'\b(tv|televisie|npo|rtl|sbs|videoland|netflix|streaming|omroep)\b', t):
-        if not any(x in t for x in ['klimaat', 'ecb', 'polder', 'boek']): return 2
+    
+    # --- VOLKSKRANT SPECIFIEKE LOGICA (De variant die werkte) ---
+    if source == "Volkskrant":
+        # De Volkskrant zet recensies ALTIJD in deze URL-paden
+        if any(x in l for x in ['/televisie', '/columns-opinie', 'han-lips', 'maaike-bos']):
+            # Extra check: we willen geen algemene opinie, alleen media-gerelateerd
+            if any(x in t or x in l for x in ['tv', 'recensie', 'lips', 'bos', 'kijk', 'serie', 'docu']):
+                return 1
+
+    # --- ALGEMENE LOGICA (Voor alle kranten) ---
+    # VIP namen en secties
+    if any(x in l for x in ['/zap', 'han-lips', 'maaike-bos', 'peereboom']):
+        return 1
+    if any(x in t for x in ['tv-recensie', 'han lips', 'maaike bos', 'zap:', 'bekeken:']):
+        return 1
+
+    # Media Nieuws (Prio 2) - Met de strikte \b (boundary) tegen 'inpoldering'
+    strict_keywords = [r'\btv\b', r'\btelevisie\b', r'\bnpo\b', r'\brtl\b', r'\bsbs\b', r'\bomroep\b', r'\bkijkcijfer']
+    if any(re.search(pattern, t) or re.search(pattern, l) for pattern in strict_keywords):
+        # Filter ruis uit Prio 2
+        if not any(x in t for x in ['klimaat', 'ecb', 'polder', 'beurs']):
+            return 2
+            
     return 0
 
 def main():
-    all_prio1 = []
-    all_prio2 = []
-    seen_links = set()
-
-    # 1. Volkskrant via de slimme route
-    vk_results = get_volkskrant_via_gemini()
-    for art in vk_results:
-        all_prio1.append(art) # Alles van de TV-tag mag naar Prio 1
-        seen_links.add(art['link'])
-
-    # 2. De rest via RSS
+    print("Starten van scraper...")
+    all_articles = {'prio1': [], 'potential': []}
+    seen = set()
+    
     for name, url in FEEDS.items():
         try:
-            print(f"Scannen: {name}...")
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            feed = feedparser.parse(r.text)
+            print(f"Scannen: {name}")
+            # ESSENTIEEL: Eerst ophalen met requests, dan pas parsen
+            response = requests.get(url, headers=HEADERS, timeout=15)
+            response.encoding = 'utf-8'
+            feed = feedparser.parse(response.text)
+            
             for entry in feed.entries:
                 link = entry.get('link')
-                if not link or link in seen_links: continue
-                prio = get_prio_level(entry.get('title', ''), link)
+                if not link or link in seen: continue
+                if not is_recent(entry): continue
+                
+                title = entry.get('title', '').strip()
+                prio = get_prio_level(title, link, name)
+                
                 if prio > 0:
-                    item = {'title': entry.get('title', '').strip(), 'link': link, 'source': name}
-                    if prio == 1: all_prio1.append(item)
-                    else: all_prio2.append(item)
-                    seen_links.add(link)
+                    item = {'title': title, 'link': link, 'source': name}
+                    if prio == 1:
+                        all_articles['prio1'].append(item)
+                    else:
+                        all_articles['potential'].append(item)
+                    seen.add(link)
+                    print(f"  + [{name}] Gevonden: {title[:50]}...")
         except Exception as e:
-            print(f"Fout bij {name}: {e}")
+            print(f"  - Fout bij {name}: {e}")
 
-    # E-mail opbouw
+    # E-mail genereren
     body = ""
-    if all_prio1:
+    if all_articles['prio1']:
         body += "<h2 style='color:#e67e22; border-bottom:1px solid #e67e22;'>⭐ Dagelijkse Recensies</h2>"
-        for art in all_prio1:
+        for art in all_articles['prio1']:
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees artikel</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
     
-    if all_prio2:
+    if all_articles['potential']:
         body += "<h2 style='color:#2980b9; border-bottom:1px solid #2980b9;'>📺 Media Nieuws</h2>"
-        for art in all_prio2:
+        for art in all_articles['potential']:
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
 
     if body:
+        print("Mail versturen...")
         requests.post("https://api.resend.com/emails", 
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
@@ -123,7 +107,8 @@ def main():
                 "subject": f"Media Focus {datetime.now().strftime('%d-%m')}",
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
-        print("Mail verzonden met succes!")
+    else:
+        print("Niets gevonden.")
 
 if __name__ == "__main__":
     main()
