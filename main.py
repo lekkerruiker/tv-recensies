@@ -29,7 +29,11 @@ MEDIA_KEYWORDS = [
     'beau', 'vandaag inside', 'renze', 'op1', 'eva jinek', 'arjen lubach', 'tv-recensie'
 ]
 
-CRITICS = ['lips', 'fortuin', 'peereboom', 'maaike bos', 'beukers', 'stokmans', 'wels', 'nijkamp', 'angela de jong']
+DIRECT_SCRAPE_URLS = [
+    ("NRC Zap", "https://www.nrc.nl/onderwerp/zap/"),
+    ("Volkskrant TV-Recensie", "https://www.volkskrant.nl/televisie/"),
+    ("NRC Cultuur", "https://www.nrc.nl/index/cultuur/")
+]
 
 def clean_text(text):
     if not text: return ""
@@ -43,30 +47,33 @@ def has_exact_word(word_list, text):
             return True
     return False
 
-def scrape_nrc_media():
+def scrape_direct_pages():
     articles = []
-    urls = [("NRC Zap", "https://www.nrc.nl/onderwerp/zap/"), ("NRC Cultuur", "https://www.nrc.nl/index/cultuur/")]
     today_str = datetime.now().strftime("/%Y/%m/%d/")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("/%Y/%m/%d/")
     
-    for source_label, url in urls:
+    for source_label, url in DIRECT_SCRAPE_URLS:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=15)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
-                for a in soup.find_all('a', class_='nmt-item__link'):
-                    title = a.get_text().strip()
+                for a in soup.find_all('a', href=True):
                     link = a['href']
+                    title = a.get_text().strip()
+                    if len(title) < 15: continue 
+                    
                     if today_str in link or yesterday_str in link:
-                        if not link.startswith('http'): link = "https://www.nrc.nl" + link
-                        articles.append({"title": title, "link": link, "source": source_label, "snippet": f"Nieuws uit {source_label}"})
+                        full_link = link if link.startswith('http') else f"https://www.{'nrc.nl' if 'nrc' in url else 'volkskrant.nl'}{link}"
+                        
+                        if source_label == "NRC Cultuur" and not has_exact_word(MEDIA_KEYWORDS, title):
+                            continue
+                            
+                        articles.append({"title": title, "link": full_link, "source": source_label, "snippet": f"Direct gescraped van {source_label}"})
         except: pass
     return articles
 
 def get_ai_prioritized_articles(articles):
-    # Prio 1 labels die we hardcoded als belangrijkste markeren
     prio1_labels = ["Parool: Han Lips", "Trouw: Maaike Bos", "Volkskrant TV-Recensie", "NRC Zap"]
-    
     prio1_list = [a for a in articles if a['source'] in prio1_labels]
     others = [a for a in articles if a['source'] not in prio1_labels]
 
@@ -77,17 +84,18 @@ def get_ai_prioritized_articles(articles):
     input_data = [{"id": i, "title": a['title'], "source": a['source']} for i, a in enumerate(others)]
     
     prompt = (
-        "Classificeer deze media-artikelen:\n"
-        "Groep 2 (NIEUWS): Hard nieuws over zenders (RTL, NPO), kijkcijfers, talkshows, media-industrie.\n"
-        "Groep 3 (OVERIG): Achtergronden, interviews en podcasts.\n"
-        "STRENG: Verwijder alles wat niet over media gaat.\n"
+        "Je bent een filter voor een media-expert. Sorteer de lijst strikt:\n"
+        "Groep 2 (NIEUWS): Hard nieuws over TV-zenders, streaming, radio, kijkcijfers en presentatoren.\n"
+        "Groep 3 (OVERIG): Media-gerelateerde podcasts, achtergrond-verhalen over media, en diepte-interviews.\n"
+        "VERWIJDER STRENG: Boeken, theater, musea, concertrecensies en algemene cultuur zonder link naar TV/Radio. Als de link er wel is mogen ze dus wél mee.\n"
         "Geef ENKEL JSON: {\"prio2\": [ids], \"prio3\": [ids]}"
         f"Lijst: {json.dumps(input_data)}"
     )
     
     try:
         resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
-        data = json.loads(re.search(r'\{.*\}', resp.json()['candidates'][0]['content']['parts'][0]['text'], re.DOTALL).group())
+        raw_response = resp.json()['candidates'][0]['content']['parts'][0]['text']
+        data = json.loads(re.search(r'\{.*\}', raw_response, re.DOTALL).group())
         return {
             "prio1": prio1_list,
             "prio2": [others[i] for i in data.get("prio2", []) if i < len(others)],
@@ -98,11 +106,16 @@ def get_ai_prioritized_articles(articles):
 
 def run_scraper():
     all_found, seen_links = [], set()
-    for art in scrape_nrc_media():
+    
+    # 1. BELANGRIJK: Eerst de direct scrape (zodat we de labels forceren)
+    for art in scrape_direct_pages():
         if art['link'] not in seen_links:
-            all_found.append(art); seen_links.add(art['link'])
+            all_found.append(art)
+            seen_links.add(art['link'])
 
     EXCLUDE_KEYWORDS = ['maak kans', 'winactie', 'tickets', 'kaarten voor', 'prijsvraag']
+    
+    # 2. Dan de RSS feeds
     for name, url in FEEDS.items():
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -111,6 +124,8 @@ def run_scraper():
                 l_match = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
                 if not (t_match and l_match): continue
                 title, link = clean_text(t_match.group(1)), l_match.group(1).strip()
+                
+                # Check of we dit artikel al hebben (via direct scrape)
                 if link in seen_links: continue
                 
                 desc_match = re.search(r'<(?:description|content:encoded|summary)>(.*?)</(?:description|content:encoded|summary)>', item, re.DOTALL)
@@ -121,29 +136,23 @@ def run_scraper():
                 
                 keep, source_label = False, name
                 has_media_keyword = has_exact_word(MEDIA_KEYWORDS, title) or has_exact_word(MEDIA_KEYWORDS, snippet)
-                has_critic = any(c in full_lower for c in CRITICS)
 
-                # --- VOLKSKRANT FIX: ALLES IN /TELEVISIE/ IS PRIO 1 ---
+                # FORCEREN: Als VK artikel in /televisie/ staat, is het Prio 1
                 if name == "Volkskrant" and "/televisie/" in link.lower():
                     source_label, keep = "Volkskrant TV-Recensie", True
-                
-                if not keep:
-                    if name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
-                        source_label, keep = "Parool: Han Lips", True
-                    elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
-                        source_label, keep = "Trouw: Maaike Bos", True
-                    elif ("/podcast/" in link.lower() or "/podcasts/" in link.lower()):
-                        # Podcast filter: Alleen doorlaten als het over media gaat
-                        if has_media_keyword or has_critic:
-                            source_label, keep = f"{name} Podcast", True
-                    elif name == "Telegraaf" and "entertainment/media" in link.lower():
-                        source_label, keep = "Telegraaf Media", True
-                    elif has_media_keyword or has_critic:
-                        keep = True
+                elif name == "Parool" and ("han-lips" in link.lower() or "han lips" in full_lower):
+                    source_label, keep = "Parool: Han Lips", True
+                elif name == "Trouw" and ("maaike-bos" in link.lower() or "maaike bos" in full_lower):
+                    source_label, keep = "Trouw: Maaike Bos", True
+                elif ("/podcast/" in link.lower() or "/podcasts/" in link.lower()):
+                    if has_media_keyword:
+                        source_label, keep = f"{name} Podcast", True
+                elif name == "Telegraaf" and "entertainment/media" in link.lower():
+                    source_label, keep = "Telegraaf Media", True
+                elif has_media_keyword:
+                    keep = True
 
-                # Harde blokkades voor nieuws-ruis
-                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']) and not has_critic:
-                    keep = False
+                if any(bad in title.lower() for bad in ['gaza', 'soedan', 'oekraïne', 'pkn']): keep = False
 
                 if keep:
                     all_found.append({"title": title, "link": link, "source": source_label, "snippet": snippet})
@@ -155,10 +164,12 @@ def build_html_section(title, articles, color):
     if not articles: return ""
     html = f"<h3 style='color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px; margin-top: 30px;'>{title}</h3><ul style='padding:0;'>"
     for art in articles:
+        # Gebruik archive.is om paywalls te omzeilen
+        archive_link = f"https://archive.is/{art['link']}"
         html += f"""<li style='margin-bottom: 20px; list-style: none; border-left: 4px solid {color}; padding-left: 15px;'>
             <strong style='font-size: 15px;'>[{art['source']}] {art['title']}</strong><br>
             <p style='margin: 4px 0; color: #555; font-size: 14px;'>{art['snippet'][:160]}...</p>
-            <a href='https://archive.is/{art['link']}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a></li>"""
+            <a href='{archive_link}' style='color: #3498db; text-decoration: none; font-size: 12px; font-weight: bold;'>🔓 Lees artikel</a></li>"""
     return html + "</ul>"
 
 if __name__ == "__main__":
@@ -167,5 +178,14 @@ if __name__ == "__main__":
         content = build_html_section("⭐ Belangrijkste artikelen", prio_data['prio1'], "#e67e22")
         content += build_html_section("📺 Media Nieuws", prio_data['prio2'], "#2980b9")
         content += build_html_section("🎧 Podcasts & Achtergrond", prio_data['prio3'], "#7f8c8d")
-        requests.post("https://api.resend.com/emails", headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={"from": EMAIL_FROM, "to": [EMAIL_RECEIVER], "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}", "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content}</body></html>"})
+        
+        requests.post(
+            "https://api.resend.com/emails", 
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": EMAIL_FROM, 
+                "to": [EMAIL_RECEIVER], 
+                "subject": f"Media Focus: {datetime.now().strftime('%d-%m')}", 
+                "html": f"<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>{content}</body></html>"
+            }
+        )
