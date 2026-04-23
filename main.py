@@ -3,50 +3,61 @@ import requests
 import feedparser
 from datetime import datetime, timedelta
 import re
+import time
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-# We gebruiken voor de Volkskrant een alternatieve URL-structuur die vaak beter werkt
+# We voegen een timestamp toe om verse data te forceren
+timestamp = int(time.time())
 FEEDS = {
-    "Volkskrant": "https://www.volkskrant.nl/televisie/rss.xml",
-    "Trouw": "https://www.trouw.nl/rss.xml",
-    "Parool": "https://www.parool.nl/rss.xml",
-    "Telegraaf": "https://www.telegraaf.nl/rss",
-    "NRC": "https://www.nrc.nl/rss/"
+    "Volkskrant": f"https://www.volkskrant.nl/televisie/rss.xml?cb={timestamp}",
+    "Trouw": f"https://www.trouw.nl/rss.xml?cb={timestamp}",
+    "Parool": f"https://www.parool.nl/rss.xml?cb={timestamp}",
+    "Telegraaf": f"https://www.telegraaf.nl/rss?cb={timestamp}",
+    "NRC": f"https://www.nrc.nl/rss/?cb={timestamp}"
 }
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 }
+
+def is_recent(entry):
+    """Controleert streng of een artikel maximaal 48 uur oud is."""
+    pub = entry.get('published_parsed') or entry.get('updated_parsed')
+    if not pub: 
+        return False
+    
+    dt_entry = datetime(*pub[:6])
+    nu = datetime.now()
+    # Alleen artikelen van de laatste 48 uur
+    return dt_entry >= (nu - timedelta(hours=48))
 
 def get_prio_level(title, link, source):
     t, l = title.lower(), link.lower()
     
-    # --- STAP 1: HARDE BLOCKS (Tegen de boek/concert vervuiling) ---
-    # Als deze woorden erin staan, negeren we het ALTIJD (behalve als er 'tv' bij staat)
-    blocks = ['boekrecensie', 'concertrecensie', 'theater', 'literatuur', 'popmuziek', 'album', 'roman']
+    # 1. HARDE BLOCKS (Geen boeken, concerten, etc.)
+    blocks = ['boekrecensie', 'concertrecensie', 'theater', 'literatuur', 'popmuziek', 'album', 'roman', 'polder']
     if any(x in t for x in blocks) and 'tv' not in t:
         return 0
 
-    # --- STAP 2: PRIO 1 (De echte recensies) ---
-    # Specifieke Volkskrant check: moet in televisie sectie zitten
+    # 2. PRIO 1 (Recensies)
+    # Voor de Volkskrant is alles in de /televisie/ sectie Prio 1
     if source == "Volkskrant" and 'televisie' in l:
         return 1
-        
-    # VIP namen en secties voor andere kranten
-    vip_names = ['han-lips', 'maaike-bos', 'peereboom', 'zap', 'lips-kijkt']
-    if any(x in l for x in vip_names) or any(x in t for x in ['tv-recensie', 'zap:', 'bekeken:']):
+    
+    # VIP namen voor andere kranten
+    if any(x in l for x in ['han-lips', 'maaike-bos', 'peereboom', 'zap']):
+        return 1
+    if any(x in t for x in ['tv-recensie', 'zap:', 'bekeken:']):
         return 1
 
-    # --- STAP 3: PRIO 2 (Media nieuws) ---
-    # Gebruik \b voor hele woorden om 'inpoldering' te voorkomen
-    media_words = [r'\btv\b', r'\btelevisie\b', r'\bnpo\b', r'\brtl\b', r'\bsbs\b', r'\bvideoland\b', r'\bnetflix\b', r'\bstreaming\b']
+    # 3. PRIO 2 (Media Nieuws)
+    media_words = [r'\btv\b', r'\btelevisie\b', r'\bnpo\b', r'\brtl\b', r'\bsbs\b', r'\bvideoland\b', r'\bnetflix\b', r'\bstreaming\b', r'\bomroep\b']
     if any(re.search(pattern, t) or re.search(pattern, l) for pattern in media_words):
-        # Extra check om klimaat/politiek ruis in Prio 2 te voorkomen
-        if not any(x in t for x in ['klimaat', 'ecb', 'polder', 'asiel']):
+        if not any(x in t for x in ['klimaat', 'ecb', 'asiel', 'beurs']):
             return 2
             
     return 0
@@ -56,18 +67,21 @@ def main():
     all_prio2 = []
     seen = set()
 
-    print("Starten van de herstelde scan...")
+    print(f"Starten van scan op {datetime.now()}")
 
     for name, url in FEEDS.items():
         try:
-            # We downloaden de feed met een mobiele User-Agent (iPhone)
-            # Dit omzeilt vaak de zware desktop-blokkades van de Volkskrant
             resp = requests.get(url, headers=HEADERS, timeout=15)
             feed = feedparser.parse(resp.text)
             
+            count_found = 0
             for entry in feed.entries:
                 link = entry.get('link')
                 if not link or link in seen: continue
+                
+                # STRENG OP DATUM CHECKEN
+                if not is_recent(entry):
+                    continue
                 
                 title = entry.get('title', '').strip()
                 prio = get_prio_level(title, link, name)
@@ -79,7 +93,8 @@ def main():
                     else:
                         all_prio2.append(item)
                     seen.add(link)
-                    print(f"Gevonden [{name}]: {title}")
+                    count_found += 1
+            print(f"[{name}] {count_found} nieuwe artikelen gevonden.")
         except Exception as e:
             print(f"Fout bij {name}: {e}")
 
@@ -103,8 +118,9 @@ def main():
                 "subject": f"Media Focus {datetime.now().strftime('%d-%m')}",
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
+        print("Mail verstuurd!")
     else:
-        print("Geen relevante artikelen gevonden.")
+        print("Geen verse artikelen gevonden.")
 
 if __name__ == "__main__":
     main()
