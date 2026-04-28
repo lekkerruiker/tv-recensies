@@ -1,96 +1,99 @@
 import os
 import requests
-import feedparser
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+import re
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-def get_articles():
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+}
+
+def scrape_section(source, section_url, link_pattern, check_date=False):
+    """Scant een specifieke pagina op relevante links."""
     articles = []
-    seen_links = set()
-    
-    # 1. DPG (Volkskrant & Parool) via Google News RSS
-    # We zoeken nu breed op de site, en filteren zelf op de URL-structuur
-    queries = [
-        ("Volkskrant", "site:volkskrant.nl"),
-        ("Parool", "site:parool.nl Han Lips")
-    ]
-    
-    for source, q in queries:
-        try:
-            # We halen de laatste 3 dagen op
-            rss_url = f"https://news.google.com/rss/search?q={q}+when:3d&hl=nl&gl=NL&ceid=NL:nl"
-            feed = feedparser.parse(requests.get(rss_url, timeout=15).text)
+    try:
+        print(f"Scannen van {source} sectie: {section_url}")
+        response = requests.get(section_url, headers=HEADERS, timeout=20)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Haal alle links op de pagina op
+        for a in soup.find_all('a', href=True):
+            href = a['href']
             
-            for entry in feed.entries:
-                link = entry.link
-                title = entry.title.split(' - ')[0]
-                l_lower = link.lower()
-                t_lower = title.lower()
-                
-                # DE ENIGE HARDE CRITERIA:
-                # Volkskrant: moet /televisie/ in de URL hebben
-                # Parool: moet /han-lips/ of /televisie/ in de URL hebben of 'Han Lips' in de titel
-                is_match = False
-                if source == "Volkskrant" and "/televisie/" in l_lower:
-                    is_match = True
-                if source == "Parool" and ("/televisie/" in l_lower or "/han-lips/" in l_lower or "han lips" in t_lower):
-                    is_match = True
-                
-                if is_match and link not in seen_links:
-                    articles.append({'title': title, 'link': link, 'source': source})
-                    seen_links.add(link)
-        except: pass
+            # Maak links absoluut
+            if href.startswith('/'):
+                domain = "volkskrant.nl" if "volkskrant" in source.lower() else \
+                         "parool.nl" if "parool" in source.lower() else \
+                         "nrc.nl" if "nrc" in source.lower() else \
+                         "telegraaf.nl"
+                full_url = f"https://www.{domain}{href}"
+            else:
+                full_url = href
 
-    # 2. Andere kranten (NRC, Telegraaf, Trouw) via hun eigen RSS
-    rss_feeds = {
-        "NRC": "https://www.nrc.nl/rss/",
-        "Telegraaf": "https://www.telegraaf.nl/rss",
-        "Trouw": "https://www.trouw.nl/rss.xml"
-    }
-    
-    for source, url in rss_feeds.items():
-        try:
-            feed = feedparser.parse(requests.get(url, timeout=15).text)
-            for entry in feed.entries:
-                link = entry.link
-                title = entry.title
-                l_lower = link.lower()
-                t_lower = title.lower()
+            # Check of de link voldoet aan jouw specifieke URL-structuur
+            if link_pattern in full_url:
+                # Bij NRC extra checken op de datum in de URL (24 uur)
+                if check_date:
+                    today = datetime.now().strftime('%Y/%m/%d')
+                    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
+                    if today not in full_url and yesterday not in full_url:
+                        continue
                 
-                # Check op de map /televisie/ of specifieke recensie-termen
-                # Dit vangt de NRC Koningsdag-recensie omdat die in de map /televisie/ staat
-                if "/televisie/" in l_lower or any(x in t_lower for x in ["zap:", "bekeken:", "tv-recensie", "maaike bos"]):
-                    if link not in seen_links:
-                        articles.append({'title': title, 'link': link, 'source': source})
-                        seen_links.add(link)
-        except: pass
-
+                title = a.get_text().strip()
+                # Alleen toevoegen als er een titel is en we de link nog niet hebben
+                if title and len(title) > 15:
+                    articles.append({'title': title, 'link': full_url, 'source': source})
+                    
+    except Exception as e:
+        print(f"Fout bij {source}: {e}")
     return articles
 
 def main():
-    all_articles = get_articles()
-    
-    if all_articles:
-        body = "<h2>⭐ Media Focus Selectie</h2>"
-        # Sorteer op bron
-        for art in sorted(all_articles, key=lambda x: x['source']):
-            body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees artikel</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
-    else:
-        body = "Geen nieuwe media-artikelen gevonden in de secties /televisie/ van de afgelopen 3 dagen."
+    all_found = []
+    seen_links = set()
 
-    # Altijd mailen ter controle
-    requests.post("https://api.resend.com/emails", 
-        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json={
-            "from": EMAIL_FROM, 
-            "to": [EMAIL_RECEIVER], 
-            "subject": f"Media Focus {datetime.now().strftime('%d-%m')}", 
-            "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
-        })
+    # 1. Volkskrant: alles op /televisie/
+    all_found.extend(scrape_section("Volkskrant", "https://www.volkskrant.nl/televisie/", "/televisie/"))
+
+    # 2. Parool: alles op /han-lips/
+    all_found.extend(scrape_section("Parool", "https://www.parool.nl/han-lips/", "/han-lips/"))
+
+    # 3. NRC: scannen op /zap/, maar links filteren op datum in URL
+    all_found.extend(scrape_section("NRC", "https://www.nrc.nl/onderwerp/zap/", "/nieuws/", check_date=True))
+
+    # 4. Telegraaf: alles op /entertainment/media/
+    all_found.extend(scrape_section("Telegraaf", "https://www.telegraaf.nl/entertainment/media/", "/entertainment/media/"))
+
+    # Uniek maken en e-mail bouwen
+    final_list = []
+    for art in all_found:
+        if art['link'] not in seen_links:
+            final_list.append(art)
+            seen_links.add(art['link'])
+
+    if final_list:
+        body = "<h2>⭐ Media Focus: Sectie Scans (24u)</h2>"
+        for art in final_list:
+            archive_url = f"https://archive.is/{art['link']}"
+            body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
+            body += f"<a href='{art['link']}'>Origineel</a> | <a href='{archive_url}'>🔓 Archive.is</a></p>"
+        
+        requests.post("https://api.resend.com/emails", 
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": EMAIL_FROM, 
+                "to": [EMAIL_RECEIVER], 
+                "subject": f"Media Focus {datetime.now().strftime('%d-%m')}", 
+                "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
+            })
+        print(f"Mail verzonden met {len(final_list)} artikelen.")
+    else:
+        print("Geen nieuwe artikelen gevonden op de specifieke pagina's.")
 
 if __name__ == "__main__":
     main()
