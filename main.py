@@ -40,15 +40,15 @@ def get_volkskrant_via_voorpagina():
         feed = feedparser.parse(requests.get(feed_url, timeout=20).text)
         
         nu = datetime.now()
-        voor_24_uur = nu - timedelta(hours=24)
+        voor_36_uur = nu - timedelta(hours=36)
 
         for entry in feed.entries:
             # 1. Check of het artikel in de map /televisie/ staat
             if "/televisie/" in entry.link.lower():
-                # 2. Check of het in de afgelopen 24 uur is geplaatst
+                # 2. Check of het in de afgelopen 36 uur is geplaatst
                 try:
                     pub_date = datetime(*entry.published_parsed[:6])
-                    if pub_date > voor_24_uur:
+                    if pub_date > voor_36_uur:
                         articles.append({
                             'title': entry.title,
                             'link': entry.link,
@@ -120,7 +120,7 @@ def main():
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
     else:
-        print("Geen nieuwe artikelen gevonden in de afgelopen 24 uur.")
+        print("Geen nieuwe artikelen gevonden in de afgelopen 36 uur.")
 
 if __name__ == "__main__":
     main()
