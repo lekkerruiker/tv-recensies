@@ -12,7 +12,7 @@ EMAIL_FROM = "onboarding@resend.dev"
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
 
 def get_nrc():
-    """Jouw NRC code: Onveranderd en werkend."""
+    """NRC: Onveranderd."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
@@ -31,14 +31,47 @@ def get_nrc():
     except: pass
     return articles
 
+def get_volkskrant_via_voorpagina():
+    """Volkskrant: Gebruikt de snelle voorpagina-feed, maar filtert op /televisie/."""
+    articles = []
+    try:
+        # We gebruiken de voorpagina feed omdat deze sneller ververst
+        feed_url = "https://www.volkskrant.nl/voorpagina/rss.xml"
+        feed = feedparser.parse(requests.get(feed_url, timeout=20).text)
+        
+        nu = datetime.now()
+        voor_24_uur = nu - timedelta(hours=24)
+
+        for entry in feed.entries:
+            # 1. Check of het artikel in de map /televisie/ staat
+            if "/televisie/" in entry.link.lower():
+                # 2. Check of het in de afgelopen 24 uur is geplaatst
+                try:
+                    pub_date = datetime(*entry.published_parsed[:6])
+                    if pub_date > voor_24_uur:
+                        articles.append({
+                            'title': entry.title,
+                            'link': entry.link,
+                            'source': 'Volkskrant'
+                        })
+                except:
+                    # Als datum-parsing mislukt, laten we hem voor de zekerheid door
+                    articles.append({
+                        'title': entry.title,
+                        'link': entry.link,
+                        'source': 'Volkskrant'
+                    })
+    except Exception as e:
+        print(f"Fout bij Volkskrant: {e}")
+    return articles
+
 def get_rss_articles(source, feed_url, path_keyword):
-    """Nieuw plan voor de rest: Gebruik RSS (omzeilt cookie walls)."""
+    """Parool & Telegraaf: Onveranderd."""
     articles = []
     try:
         feed = feedparser.parse(requests.get(feed_url, timeout=20).text)
         for entry in feed.entries:
             link = entry.link
-            # Check of de link de specifieke map bevat die je eist
             if path_keyword in link.lower():
                 articles.append({
                     'title': entry.title,
@@ -51,20 +84,19 @@ def get_rss_articles(source, feed_url, path_keyword):
 def main():
     all_found = []
     
-    # 1. NRC: De specifieke scraper (onveranderd)
+    # 1. NRC (Onveranderd)
     all_found.extend(get_nrc())
 
-    # 2. Volkskrant: Gebruik hun RSS feed
-    # Dit vangt alles in de categorie 'televisie'
-    all_found.extend(get_rss_articles("Volkskrant", "https://www.volkskrant.nl/televisie/rss.xml", "/televisie/"))
+    # 2. Volkskrant (Nieuwe methode via voorpagina-feed)
+    all_found.extend(get_volkskrant_via_voorpagina())
 
-    # 3. Parool: Gebruik hun algemene RSS, maar filter STRENG op Han Lips
+    # 3. Parool (Onveranderd)
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
 
-    # 4. Telegraaf: Gebruik de Media RSS feed
+    # 4. Telegraaf (Onveranderd)
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
-    # Dedupliceren en filteren op 24 uur (RSS feeds zijn meestal al vers)
+    # Dedupliceren (op basis van URL)
     seen = set()
     final_list = []
     for art in all_found:
@@ -73,7 +105,7 @@ def main():
             seen.add(art['link'])
 
     if final_list:
-        body = "<h2>⭐ Media Focus: Dagelijkse Update</h2>"
+        body = "<h2>⭐ Media Focus: Update</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
@@ -88,7 +120,7 @@ def main():
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
     else:
-        print("Geen nieuwe artikelen gevonden.")
+        print("Geen nieuwe artikelen gevonden in de afgelopen 24 uur.")
 
 if __name__ == "__main__":
     main()
