@@ -10,49 +10,48 @@ EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 }
 
-def get_volkskrant_archive_multi_day():
-    """Scant het archief van de afgelopen 2 dagen voor de Volkskrant."""
+def get_articles_from_sitemap(source_name, sitemap_url):
+    """Scant de officiële sitemap voor de allernieuwste artikelen."""
     articles = []
-    # We checken gisteren én eergisteren om weekend-artikelen op te vangen
-    for d in [1, 2]:
-        target_date = (datetime.now() - timedelta(days=d)).strftime('%Y/%m/%d')
-        url = f"https://www.volkskrant.nl/archief/{target_date}"
+    try:
+        print(f"Scannen sitemap: {source_name}")
+        r = requests.get(sitemap_url, headers=HEADERS, timeout=20)
+        # We zoeken naar alle links in de sitemap
+        links = re.findall(r'<loc>(https://www\.' + source_name.lower() + r'\.nl/[^<]+?~b[^<]+?)</loc>', r.text)
         
-        try:
-            print(f"Scannen Volkskrant archief: {url}")
-            r = requests.get(url, headers=HEADERS, timeout=20)
-            # Zoek ELK artikel in de televisiesectie (~b code + /televisie/)
-            matches = re.findall(r'href="(/televisie/[^"]+?~b[^"]+?)".*?><h[^>]*>(.*?)</h', r.text, re.DOTALL)
-            
-            for link, title in matches:
-                clean_title = re.sub('<[^<]+?>', '', title).strip()
-                full_link = f"https://www.volkskrant.nl{link}"
-                if not any(a['link'] == full_link for a in articles):
-                    articles.append({
-                        'title': clean_title,
-                        'link': full_link,
-                        'source': 'Volkskrant'
-                    })
-        except: continue
+        for link in links[:150]: # Check de 150 nieuwste links
+            # We filteren op de harde sectie 'televisie' in de URL
+            if '/televisie/' in link or '/columns/han-lips/' in link:
+                # We halen de titel uit de URL als noodgreep, of we maken hem mooi
+                # Voorbeeld: .../titel-van-het-artikel~be64d6fd/ -> titel van het artikel
+                title_part = link.split('/')[-2].replace('-', ' ').capitalize()
+                # Verwijder de ID aan het einde als die in de title_part zit
+                title_part = re.sub(r'~b.*', '', title_part).strip()
+                
+                articles.append({
+                    'title': title_part,
+                    'link': link,
+                    'source': source_name
+                })
+    except Exception as e:
+        print(f"Sitemap fout {source_name}: {e}")
     return articles
 
 def main():
     all_articles = []
     seen_links = set()
 
-    # 1. Volkskrant: Harde scan op archief (2 dagen terug)
-    vk_list = get_volkskrant_archive_multi_day()
-    for a in vk_list:
-        all_articles.append(a)
-        seen_links.add(a['link'])
+    # 1. Volkskrant & Parool via de Sitemap (De meest betrouwbare bron)
+    all_articles.extend(get_articles_from_sitemap("Volkskrant", "https://www.volkskrant.nl/sitemap.xml"))
+    all_articles.extend(get_articles_from_sitemap("Parool", "https://www.parool.nl/sitemap.xml"))
 
-    # 2. De rest via RSS (Parool, NRC, Telegraaf, Trouw)
+    for a in all_articles: seen_links.add(a['link'])
+
+    # 2. De rest via de stabiele RSS
     RSS_FEEDS = {
-        "Parool": "https://www.parool.nl/rss.xml",
         "NRC": "https://www.nrc.nl/rss/",
         "Telegraaf": "https://www.telegraaf.nl/rss",
         "Trouw": "https://www.trouw.nl/rss.xml"
@@ -66,20 +65,15 @@ def main():
                 title = entry.get('title', '')
                 if not link or link in seen_links: continue
                 
-                # Datum check (ruim: 72 uur om weekend te dekken)
-                pub = entry.get('published_parsed')
-                if pub and datetime(*pub[:6]) < (datetime.now() - timedelta(hours=72)):
-                    continue
-                
-                # Filter logica
+                # Check op relevantie
                 t_l = (title + link).lower()
-                if any(x in t_l for x in ['televisie', 'tv-recensie', 'han-lips', 'zap:', 'bekeken:']):
+                if any(x in t_l for x in ['televisie', 'tv-recensie', 'maaike-bos', 'zap:', 'bekeken:']):
                     if not any(x in title.lower() for x in ['boek', 'concert', 'stikstof']):
                         all_articles.append({'title': title, 'link': link, 'source': name})
                         seen_links.add(link)
         except: continue
 
-    # E-mail verzenden (ongewijzigd)
+    # E-mail opbouw
     body = ""
     if all_articles:
         body += "<h2 style='color:#e67e22; border-bottom:1px solid #e67e22;'>⭐ Dagelijkse Selectie</h2>"
