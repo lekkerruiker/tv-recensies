@@ -9,36 +9,38 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-def get_via_google(source, query):
-    """Haalt artikelen op via Google News (omzeilt directe blokkades)."""
+def get_via_google_specific(source, search_term):
+    """Zoekt zeer specifiek binnen één bron via Google RSS."""
     articles = []
-    # We zoeken specifiek op de site van de krant via Google
-    rss_url = f"https://news.google.com/rss/search?q=site:{source.lower()}.nl+{query}&hl=nl&gl=NL&ceid=NL:nl"
+    # We zoeken nu op de exacte naam of sectie-URL
+    rss_url = f"https://news.google.com/rss/search?q=site:{source.lower()}.nl+{search_term}&hl=nl&gl=NL&ceid=NL:nl"
     try:
         resp = requests.get(rss_url, timeout=15)
         feed = feedparser.parse(resp.text)
-        for entry in feed.entries[:10]:
+        for entry in feed.entries[:15]:
             title = entry.title.split(' - ')[0]
             link = entry.link
-            # Check op de Oranjezondag/recensie termen
-            if any(x in title.lower() or x in link.lower() for x in ['televisie', 'recensie', 'lips', 'kijkt', 'oranjezondag']):
-                articles.append({'title': title, 'link': link, 'source': source})
-    except Exception as e:
-        print(f"Google News fout voor {source}: {e}")
+            
+            # STRENG FILTER: uitsluiten van film, concert, theater, boek
+            if any(x in title.lower() for x in ['film', 'concert', 'theater', 'boek', 'album', 'podcast']):
+                continue
+                
+            articles.append({'title': title, 'link': link, 'source': source})
+    except: pass
     return articles
 
-def get_rss_safe(name, url):
-    """RSS voor de kranten die meestal wel werken."""
+def get_rss_strict(name, url):
+    """RSS voor NRC, Telegraaf, Trouw met verbeterde filters."""
     articles = []
     try:
-        resp = requests.get(url, timeout=15)
-        feed = feedparser.parse(resp.text)
+        feed = feedparser.parse(requests.get(url, timeout=15).text)
         for entry in feed.entries:
             title = entry.get('title', '')
             link = entry.get('link', '')
-            t_l = (title + link).lower()
-            if any(x in t_l for x in ['televisie', 'tv-recensie', 'han-lips', 'zap:', 'bekeken:']):
-                if not any(x in title.lower() for x in ['stikstof', 'boek', 'concert']):
+            
+            # Prio indicators
+            if any(x in (title + link).lower() for x in ['tv-recensie', 'maaike-bos', 'zap:', 'bekeken:']):
+                if not any(x in title.lower() for x in ['film', 'boek', 'concert']):
                     articles.append({'title': title, 'link': link, 'source': name})
     except: pass
     return articles
@@ -47,42 +49,45 @@ def main():
     all_articles = []
     seen = set()
 
-    # 1. Volkskrant & Parool via Google Bridge (meest kansrijk tegen blokkades)
-    all_articles.extend(get_via_google("Volkskrant", "televisie"))
-    all_articles.extend(get_via_google("Parool", "Han+Lips"))
+    # 1. PAROOL: Specifiek zoeken op Han Lips (zo vangen we de Amsterdam Centraal recensie)
+    all_articles.extend(get_via_google_specific("Parool", "Han+Lips"))
+    
+    # 2. VOLKSKRANT: Zoeken op de sectie televisie (voor de Oranjezondag recensie)
+    all_articles.extend(get_via_google_specific("Volkskrant", "inurl:televisie"))
 
-    # 2. De rest via RSS
+    # 3. OVERIG: De rest via RSS
     feeds = {
         "NRC": "https://www.nrc.nl/rss/",
         "Telegraaf": "https://www.telegraaf.nl/rss",
         "Trouw": "https://www.trouw.nl/rss.xml"
     }
     for name, url in feeds.items():
-        all_articles.extend(get_rss_safe(name, url))
+        all_articles.extend(get_rss_strict(name, url))
 
-    # Opschonen
+    # Uniek maken
     final_list = []
     for art in all_articles:
         if art['link'] not in seen:
             final_list.append(art)
             seen.add(art['link'])
 
-    # E-mail opbouwen
+    # Mail opbouwen
     if final_list:
-        body = "<h2>⭐ Media Selectie</h2>"
-        for art in final_list:
-            body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
+        body = "<h2>⭐ Media Focus Selectie</h2>"
+        # Sorteer op bron voor de leesbaarheid
+        for art in sorted(final_list, key=lambda x: x['source']):
+            body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees artikel</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
     else:
-        body = "<p>Vandaag zijn er geen nieuwe recensies gevonden die aan de filters voldoen.</p>"
+        body = "<p>Geen nieuwe recensies gevonden met de huidige filters.</p>"
 
-    # Altijd mailen (zo zie je dat het script werkt)
+    # Versturen
     requests.post("https://api.resend.com/emails", 
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         json={
             "from": EMAIL_FROM, 
             "to": [EMAIL_RECEIVER], 
             "subject": f"Media Focus {datetime.now().strftime('%d-%m')}", 
-            "html": f"<html><body>{body}</body></html>"
+            "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
         })
 
 if __name__ == "__main__":
