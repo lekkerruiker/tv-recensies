@@ -18,11 +18,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests feedparser
+        run: pip install requests beautifulsoup4 feedparser
 
       - name: Run scraper
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: python main.py
