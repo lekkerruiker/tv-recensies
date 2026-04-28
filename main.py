@@ -12,18 +12,23 @@ EMAIL_FROM = "onboarding@resend.dev"
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
 
 def get_nrc():
-    """NRC: Onveranderd."""
+    """NRC: Scraper met 3-daagse datumcheck om 36 uur te dekken."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
         res = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # Datums genereren voor vandaag, gisteren en eergisteren
         today = datetime.now().strftime('%Y/%m/%d')
         yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
+        eergisteren = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
+        target_dates = [today, yesterday, eergisteren]
         
         for a in soup.find_all('a', href=True):
             link = a['href']
-            if "/nieuws/" in link and (today in link or yesterday in link):
+            # Check of de link een van de datums bevat
+            if "/nieuws/" in link and any(d in link for d in target_dates):
                 full_url = f"https://www.nrc.nl{link}" if link.startswith('/') else link
                 title = a.get_text().strip()
                 if len(title) > 15:
@@ -32,10 +37,9 @@ def get_nrc():
     return articles
 
 def get_volkskrant_via_voorpagina():
-    """Volkskrant: Gebruikt de snelle voorpagina-feed, maar filtert op /televisie/."""
+    """Volkskrant: Voorpagina-feed met 36 uur filter."""
     articles = []
     try:
-        # We gebruiken de voorpagina feed omdat deze sneller ververst
         feed_url = "https://www.volkskrant.nl/voorpagina/rss.xml"
         feed = feedparser.parse(requests.get(feed_url, timeout=20).text)
         
@@ -43,57 +47,44 @@ def get_volkskrant_via_voorpagina():
         voor_36_uur = nu - timedelta(hours=36)
 
         for entry in feed.entries:
-            # 1. Check of het artikel in de map /televisie/ staat
             if "/televisie/" in entry.link.lower():
-                # 2. Check of het in de afgelopen 36 uur is geplaatst
                 try:
                     pub_date = datetime(*entry.published_parsed[:6])
                     if pub_date > voor_36_uur:
-                        articles.append({
-                            'title': entry.title,
-                            'link': entry.link,
-                            'source': 'Volkskrant'
-                        })
+                        articles.append({'title': entry.title, 'link': entry.link, 'source': 'Volkskrant'})
                 except:
-                    # Als datum-parsing mislukt, laten we hem voor de zekerheid door
-                    articles.append({
-                        'title': entry.title,
-                        'link': entry.link,
-                        'source': 'Volkskrant'
-                    })
+                    articles.append({'title': entry.title, 'link': entry.link, 'source': 'Volkskrant'})
     except Exception as e:
         print(f"Fout bij Volkskrant: {e}")
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Parool & Telegraaf: Onveranderd."""
+    """Parool & Telegraaf: Nu ook met 36 uur tijdfilter."""
     articles = []
     try:
         feed = feedparser.parse(requests.get(feed_url, timeout=20).text)
+        nu = datetime.now()
+        voor_36_uur = nu - timedelta(hours=36)
+        
         for entry in feed.entries:
             link = entry.link
             if path_keyword in link.lower():
-                articles.append({
-                    'title': entry.title,
-                    'link': link,
-                    'source': source
-                })
+                try:
+                    pub_date = datetime(*entry.published_parsed[:6])
+                    if pub_date > voor_36_uur:
+                        articles.append({'title': entry.title, 'link': link, 'source': source})
+                except:
+                    articles.append({'title': entry.title, 'link': link, 'source': source})
     except: pass
     return articles
 
 def main():
     all_found = []
     
-    # 1. NRC (Onveranderd)
+    # Haal alle artikelen op
     all_found.extend(get_nrc())
-
-    # 2. Volkskrant (Nieuwe methode via voorpagina-feed)
     all_found.extend(get_volkskrant_via_voorpagina())
-
-    # 3. Parool (Onveranderd)
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
-
-    # 4. Telegraaf (Onveranderd)
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
     # Dedupliceren (op basis van URL)
@@ -105,7 +96,7 @@ def main():
             seen.add(art['link'])
 
     if final_list:
-        body = "<h2>⭐ Media Focus: Update</h2>"
+        body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
