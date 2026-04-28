@@ -3,62 +3,55 @@ import requests
 import feedparser
 from datetime import datetime, timedelta
 import re
-import urllib.parse
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-def get_google_news_articles(source, query):
-    """Haalt actuele DPG artikelen op via Google News Proxy."""
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'nl-NL,nl;q=0.9'
+}
+
+def get_volkskrant_archive_exact():
+    """Scant de archiefpagina van gisteren en pakt ELK artikel uit de televisiesectie."""
     articles = []
-    search_query = f'site:{source.lower()}.nl {query}'
-    encoded_query = urllib.parse.quote(search_query)
-    # We voegen 'when:2d' toe aan de query om alleen artikelen van de laatste 2 dagen te pakken
-    url = f"https://news.google.com/rss/search?q={encoded_query}+when:2d&hl=nl&gl=NL&ceid=NL:nl"
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
+    url = f"https://www.volkskrant.nl/archief/{yesterday}"
     
     try:
-        resp = requests.get(url, timeout=15)
-        feed = feedparser.parse(resp.text)
-        for entry in feed.entries[:8]:
-            title = entry.title.split(' - ')[0]
-            # Strikte check om oude troep of ruis te voorkomen
-            if any(x in title.lower() for x in ['tv', 'recensie', 'lips', 'bos', 'kijkt', 'serie', 'docu']):
-                if not any(x in title.lower() for x in ['boek', 'concert', 'podcast-tip']):
-                    articles.append({'title': title, 'link': entry.link, 'source': source})
-    except: pass
+        print(f"Scannen Volkskrant archief: {url}")
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        # We zoeken specifiek naar links die /televisie/ in het pad hebben
+        # De regex pakt de link en de titel die er direct achter staat
+        matches = re.findall(r'href="(/televisie/[^"]+?~b[^"]+?)".*?><h[^>]*>(.*?)</h', r.text, re.DOTALL)
+        
+        for link, title in matches:
+            clean_title = re.sub('<[^<]+?>', '', title).strip()
+            articles.append({
+                'title': clean_title,
+                'link': f"https://www.volkskrant.nl{link}",
+                'source': 'Volkskrant'
+            })
+            print(f"  Gevonden in archief: {clean_title}")
+    except Exception as e:
+        print(f"Archief scan fout: {e}")
     return articles
-
-def get_prio_level(title, link):
-    """De herstelde logica voor NRC, Telegraaf en Trouw."""
-    t, l = title.lower(), link.lower()
-    
-    # 1. Blocks (Scunthorpe)
-    if any(x in t for x in ['boekrecensie', 'concertrecensie', 'kerkdienst', 'stikstof', 'album']):
-        return 0
-    
-    # 2. Prio 1: Recensies en bekende namen
-    p1_names = ['han-lips', 'maaike-bos', 'peereboom', 'zap', 'televisie', 'tv-recensie']
-    if any(x in l or x in t for x in p1_names):
-        return 1
-        
-    # 3. Prio 2: Media Nieuws (Strict op hele woorden)
-    if re.search(r'\b(tv|npo|rtl|sbs|videoland|netflix|streaming|omroep)\b', t):
-        return 2
-        
-    return 0
 
 def main():
     all_articles = []
     seen_links = set()
 
-    # 1. DPG Kranten via de werkende Google Proxy (Gelimiteerd op tijd)
-    all_articles.extend(get_google_news_articles("Volkskrant", "televisie"))
-    all_articles.extend(get_google_news_articles("Parool", "televisie Han Lips"))
+    # 1. Volkskrant: Harde scan op het archief van gisteren (geen zoekwoorden nodig!)
+    vk_articles = get_volkskrant_archive_exact()
+    all_articles.extend(vk_articles)
+    for a in vk_articles: seen_links.add(a['link'])
 
-    # 2. Andere Kranten via de stabiele RSS
+    # 2. De overige kranten via de vertrouwde RSS
     RSS_FEEDS = {
+        "Parool": "https://www.parool.nl/rss.xml",
         "NRC": "https://www.nrc.nl/rss/",
         "Telegraaf": "https://www.telegraaf.nl/rss",
         "Trouw": "https://www.trouw.nl/rss.xml"
@@ -66,26 +59,28 @@ def main():
 
     for name, url in RSS_FEEDS.items():
         try:
-            feed = feedparser.parse(requests.get(url, timeout=10).text)
+            feed = feedparser.parse(requests.get(url, headers=HEADERS, timeout=15).text)
             for entry in feed.entries:
                 link = entry.get('link')
                 title = entry.get('title', '')
+                if not link or link in seen_links: continue
                 
-                # Datum check voor RSS (max 48 uur)
+                # Datum check (48 uur)
                 pub = entry.get('published_parsed')
                 if pub and datetime(*pub[:6]) < (datetime.now() - timedelta(hours=48)):
                     continue
                 
-                prio = get_prio_level(title, link)
-                if prio > 0 and link not in seen_links:
-                    all_articles.append({'title': title, 'link': link, 'source': name})
-                    seen_links.add(link)
+                # Filter voor RSS kranten (iets ruimer voor Parool/Han Lips)
+                t_l = (title + link).lower()
+                if any(x in t_l for x in ['televisie', 'tv-recensie', 'han-lips', 'zap:', 'bekeken:']):
+                    if not any(x in title.lower() for x in ['boek', 'concert', 'stikstof']):
+                        all_articles.append({'title': title, 'link': link, 'source': name})
+                        seen_links.add(link)
         except: continue
 
     # E-mail verzenden
     body = ""
     if all_articles:
-        # Sorteer zodat Volkskrant en Parool bovenaan staan (meestal Prio 1)
         body += "<h2 style='color:#e67e22; border-bottom:1px solid #e67e22;'>⭐ Dagelijkse Selectie</h2>"
         for art in all_articles:
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
