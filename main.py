@@ -2,64 +2,68 @@ import os
 import requests
 import feedparser
 from datetime import datetime, timedelta
-import re
 
 # --- CONFIGURATIE ---
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-def get_specific_media_articles():
+def get_articles():
     articles = []
     seen_links = set()
-    limit = datetime.now() - timedelta(hours=72) # Iets ruimer voor het weekend
     
-    # 1. DPG via Google News (Volkskrant & Parool)
-    # We zoeken nu heel specifiek op de secties
+    # 1. DPG (Volkskrant & Parool) via Google News RSS
+    # We zoeken nu breed op de site, en filteren zelf op de URL-structuur
     queries = [
-        ("Parool", "Han+Lips"), 
-        ("Volkskrant", "inurl:televisie")
+        ("Volkskrant", "site:volkskrant.nl"),
+        ("Parool", "site:parool.nl Han Lips")
     ]
     
     for source, q in queries:
         try:
-            rss_url = f"https://news.google.com/rss/search?q=site:{source.lower()}.nl+{q}+when:3d&hl=nl&gl=NL&ceid=NL:nl"
+            # We halen de laatste 3 dagen op
+            rss_url = f"https://news.google.com/rss/search?q={q}+when:3d&hl=nl&gl=NL&ceid=NL:nl"
             feed = feedparser.parse(requests.get(rss_url, timeout=15).text)
+            
             for entry in feed.entries:
-                title = entry.title.split(' - ')[0]
                 link = entry.link
-                t_l = (title + link).lower()
+                title = entry.title.split(' - ')[0]
+                l_lower = link.lower()
+                t_lower = title.lower()
                 
-                # Check of het een "Hard Target" is (moet altijd doorlaten)
-                is_vip = any(x in t_l for x in ['han-lips', 'televisie', 'recensie', 'maaike-bos'])
+                # DE ENIGE HARDE CRITERIA:
+                # Volkskrant: moet /televisie/ in de URL hebben
+                # Parool: moet /han-lips/ of /televisie/ in de URL hebben of 'Han Lips' in de titel
+                is_match = False
+                if source == "Volkskrant" and "/televisie/" in l_lower:
+                    is_match = True
+                if source == "Parool" and ("/televisie/" in l_lower or "/han-lips/" in l_lower or "han lips" in t_lower):
+                    is_match = True
                 
-                # Alleen uitsluiten als het GEEN VIP artikel is
-                is_noise = False
-                if not is_vip:
-                    is_noise = any(x in t_l for x in ['voetbal', 'ajax', 'steekpartij', 'brand', 'fatbike'])
-                
-                if is_vip and not is_noise and link not in seen_links:
+                if is_match and link not in seen_links:
                     articles.append({'title': title, 'link': link, 'source': source})
                     seen_links.add(link)
         except: pass
 
-    # 2. Overige via RSS (NRC, Telegraaf, Trouw)
+    # 2. Andere kranten (NRC, Telegraaf, Trouw) via hun eigen RSS
     rss_feeds = {
         "NRC": "https://www.nrc.nl/rss/",
         "Telegraaf": "https://www.telegraaf.nl/rss",
         "Trouw": "https://www.trouw.nl/rss.xml"
     }
+    
     for source, url in rss_feeds.items():
         try:
             feed = feedparser.parse(requests.get(url, timeout=15).text)
             for entry in feed.entries:
-                title = entry.get('title', '')
-                link = entry.get('link', '')
-                t_l = (title + link).lower()
+                link = entry.link
+                title = entry.title
+                l_lower = link.lower()
+                t_lower = title.lower()
                 
-                # NRC specifieke check voor die Koningsdag recensie
-                # We kijken of 'televisie' in de URL staat of 'zap' in de titel
-                if any(x in t_l for x in ['/televisie/', 'zap:', 'bekeken:', 'maaike-bos', 'tv-recensie']):
+                # Check op de map /televisie/ of specifieke recensie-termen
+                # Dit vangt de NRC Koningsdag-recensie omdat die in de map /televisie/ staat
+                if "/televisie/" in l_lower or any(x in t_lower for x in ["zap:", "bekeken:", "tv-recensie", "maaike bos"]):
                     if link not in seen_links:
                         articles.append({'title': title, 'link': link, 'source': source})
                         seen_links.add(link)
@@ -68,34 +72,25 @@ def get_specific_media_articles():
     return articles
 
 def main():
-    try:
-        all_articles = get_specific_media_articles()
-        
-        if all_articles:
-            body = "<h2>⭐ Media Focus: De Selectie</h2>"
-            # Sorteer op bron
-            for art in sorted(all_articles, key=lambda x: x['source']):
-                body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees artikel</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
-            
-            requests.post("https://api.resend.com/emails", 
-                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "from": EMAIL_FROM, 
-                    "to": [EMAIL_RECEIVER], 
-                    "subject": f"Media Focus {datetime.now().strftime('%d-%m')}", 
-                    "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
-                })
-        else:
-            # Stuur nog steeds een mail als er niets is, zodat je weet dat het script draait
-            requests.post("https://api.resend.com/emails", 
-                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "from": EMAIL_FROM, "to": [EMAIL_RECEIVER], 
-                    "subject": "Media Focus: Geen nieuwe artikelen", 
-                    "html": "<html><body>Geen nieuwe media-artikelen gevonden in de afgelopen 72 uur.</body></html>"
-                })
-    except Exception as e:
-        print(f"Fout: {e}")
+    all_articles = get_articles()
+    
+    if all_articles:
+        body = "<h2>⭐ Media Focus Selectie</h2>"
+        # Sorteer op bron
+        for art in sorted(all_articles, key=lambda x: x['source']):
+            body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br><a href='{art['link']}'>Lees artikel</a> | <a href='https://archive.is/{art['link']}'>🔓 Archief</a></p>"
+    else:
+        body = "Geen nieuwe media-artikelen gevonden in de secties /televisie/ van de afgelopen 3 dagen."
+
+    # Altijd mailen ter controle
+    requests.post("https://api.resend.com/emails", 
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json={
+            "from": EMAIL_FROM, 
+            "to": [EMAIL_RECEIVER], 
+            "subject": f"Media Focus {datetime.now().strftime('%d-%m')}", 
+            "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
+        })
 
 if __name__ == "__main__":
     main()
