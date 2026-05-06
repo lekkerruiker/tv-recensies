@@ -1,25 +1,24 @@
 name: Daily Media Mail
-
 on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
-
 jobs:
   send-mail:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 feedparser
-
+        run: pip install requests beautifulsoup4 feedparser playwright
+      - name: Install Playwright Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
       - name: Run scraper
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
