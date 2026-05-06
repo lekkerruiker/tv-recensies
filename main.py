@@ -10,17 +10,19 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
+# Feeds voor Volkskrant en Trouw
 VK_FEEDS = [
-    "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", # Televisie algemeen
+    "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", # Televisie
     "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752"  # Kijkkunde
 ]
+TROUW_FEED = "https://www.google.nl/alerts/feeds/04781440717054478383/9898575911905288324"
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 }
 
 def get_nrc():
-    """NRC: Via de website (Zap-sectie)."""
+    """NRC: Via de website."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
@@ -41,34 +43,50 @@ def get_nrc():
     return articles
 
 def get_volkskrant_via_alerts():
-    """Volkskrant: Haalt artikelen op en filtert STRENG op de URL-structuur."""
+    """Volkskrant: Filtert streng op /televisie/."""
     articles = []
     for feed_url in VK_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries:
-                # Titel opschonen
-                title = re.sub('<[^<]+?>', '', entry.title)
-                title = title.replace(" - de Volkskrant", "").strip()
-                
-                # Echte URL uit Google redirect halen
+                title = re.sub('<[^<]+?>', '', entry.title).replace(" - de Volkskrant", "").strip()
                 raw_link = entry.link
                 actual_link = raw_link
                 if "url=" in raw_link:
                     match = re.search(r'url=(https?://[^&]+)', raw_link)
-                    if match:
-                        actual_link = match.group(1)
+                    if match: actual_link = match.group(1)
 
-                # STRIKTE FILTER: De URL MOET "volkskrant.nl/televisie/" bevatten
-                # Dit negeert artikelen uit andere secties die toevallig over TV gaan.
                 if "volkskrant.nl/televisie/" in actual_link.lower():
-                    articles.append({
-                        'title': title,
-                        'link': actual_link,
-                        'source': 'Volkskrant'
-                    })
-        except Exception as e:
-            print(f"Fout bij verwerken VK feed: {e}")
+                    articles.append({'title': title, 'link': actual_link, 'source': 'Volkskrant'})
+        except: pass
+    return articles
+
+def get_trouw_via_alerts():
+    """Trouw: Filtert streng op /cultuur-media/."""
+    articles = []
+    try:
+        feed = feedparser.parse(TROUW_FEED)
+        for entry in feed.entries:
+            # Titel opschonen (Google rommel en sitenaam verwijderen)
+            title = re.sub('<[^<]+?>', '', entry.title).replace(" - Trouw", "").strip()
+            
+            # Echte link uit Google redirect vissen
+            raw_link = entry.link
+            actual_link = raw_link
+            if "url=" in raw_link:
+                match = re.search(r'url=(https?://[^&]+)', raw_link)
+                if match:
+                    actual_link = match.group(1)
+
+            # STRIKTE FILTER voor Trouw
+            if "trouw.nl/cultuur-media/" in actual_link.lower():
+                articles.append({
+                    'title': title,
+                    'link': actual_link,
+                    'source': 'Trouw'
+                })
+    except Exception as e:
+        print(f"Fout bij Trouw feed: {e}")
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
@@ -88,11 +106,14 @@ def main():
     print(f"Start Media Focus Scraper op {datetime.now().strftime('%d-%m %H:%M')}")
     all_found = []
 
+    # Verzamelen van alle bronnen
     all_found.extend(get_nrc())
     all_found.extend(get_volkskrant_via_alerts())
+    all_found.extend(get_trouw_via_alerts()) # Nieuwe bron toegevoegd
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
+    # Uniek maken op basis van link
     seen_links = set()
     final_list = []
     for art in all_found:
@@ -102,6 +123,7 @@ def main():
 
     if final_list:
         final_list.sort(key=lambda x: x['source'])
+        
         body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
