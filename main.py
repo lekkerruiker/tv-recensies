@@ -76,8 +76,8 @@ def get_volkskrant_via_alerts():
 def get_rss_articles(source, feed_url, path_keyword):
     """Parool & Telegraaf: Via de standaard RSS feeds."""
     articles = []
-    # We kijken 36 uur terug om zeker te weten dat we de laatste avond meepakken
-    limit = datetime.now() - timedelta(hours=36)
+    # We kijken 24 uur terug om zeker te weten dat we de laatste avond meepakken
+    limit = datetime.now() - timedelta(hours=24)
     try:
         res = requests.get(feed_url, timeout=20)
         feed = feedparser.parse(res.text)
@@ -109,7 +109,7 @@ def main():
         # Sorteren op bronnaam
         final_list.sort(key=lambda x: x['source'])
         
-        body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
+        body = "<h2>⭐ Media Focus: Update (Laatste 24 uur)</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
