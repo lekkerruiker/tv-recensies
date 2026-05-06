@@ -14,17 +14,18 @@ HEADERS = {
 }
 
 def get_nrc():
-    """NRC: Onveranderd."""
+    """NRC: Onveranderd (3-daagse check)."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
         res = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
-        target_dates = [
-            datetime.now().strftime('%Y/%m/%d'),
-            (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d'),
-            (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
-        ]
+        
+        today = datetime.now().strftime('%Y/%m/%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
+        eergisteren = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
+        target_dates = [today, yesterday, eergisteren]
+        
         for a in soup.find_all('a', href=True):
             link = a['href']
             if "/nieuws/" in link and any(d in link for d in target_dates):
@@ -36,41 +37,33 @@ def get_nrc():
     return articles
 
 def get_volkskrant():
-    """Volkskrant: Zoekt puur en alleen op de archiefpagina naar /televisie/ links."""
+    """Volkskrant: Terug naar de werkende basis-scraper van de sectiepagina."""
     articles = []
-    url = "https://www.volkskrant.nl/archief/"
+    # We scannen de directe landingspagina, dit werkte in de eerste versies het beste
+    url = "https://www.volkskrant.nl/televisie/"
     try:
         res = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # Zoek alle links op de pagina
         for a in soup.find_all('a', href=True):
             href = a['href']
-            # De gevraagde check: begint of bevat de link /televisie/
-            if "/televisie/" in href:
-                # Maak de link volledig
+            # Zoek naar de kenmerkende Volkskrant artikel-URL structuur
+            if "/televisie/" in href and "~b" in href:
                 full_url = f"https://www.volkskrant.nl{href}" if href.startswith('/') else href
-                
-                # Pak de tekst van de link als titel
                 title = a.get_text().strip()
                 
-                # Als de tekst leeg is (bijv. bij een plaatje), haal de titel uit de URL
-                if not title:
+                # Als er geen tekst is, halen we de titel uit de URL slug
+                if not title or len(title) < 10:
                     slug = href.split('/')[-2] if href.endswith('/') else href.split('/')[-1]
                     title = slug.split('~')[0].replace('-', ' ').capitalize()
                 
                 if len(title) > 10:
-                    articles.append({
-                        'title': title,
-                        'link': full_url,
-                        'source': 'Volkskrant'
-                    })
-    except Exception as e:
-        print(f"Fout bij Volkskrant archief: {e}")
+                    articles.append({'title': title, 'link': full_url, 'source': 'Volkskrant'})
+    except: pass
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Parool & Telegraaf: Onveranderd met 36 uur filter."""
+    """Parool & Telegraaf: Onveranderd (36 uur check)."""
     articles = []
     limit = datetime.now() - timedelta(hours=36)
     try:
@@ -82,6 +75,7 @@ def get_rss_articles(source, feed_url, path_keyword):
                     if pub_date > limit:
                         articles.append({'title': entry.title, 'link': entry.link, 'source': source})
                 except:
+                    # Als de feed geen datum heeft, laten we hem door (veiligheidsmarge)
                     articles.append({'title': entry.title, 'link': entry.link, 'source': source})
     except: pass
     return articles
@@ -89,10 +83,13 @@ def get_rss_articles(source, feed_url, path_keyword):
 def main():
     all_found = []
     
-    # Voer alle scrapers uit
+    # 1. NRC
     all_found.extend(get_nrc())
+    # 2. Volkskrant (Herstelde methode)
     all_found.extend(get_volkskrant())
+    # 3. Parool
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
+    # 4. Telegraaf
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
     # Uniek maken op basis van URL
@@ -105,7 +102,6 @@ def main():
 
     if final_list:
         final_list.sort(key=lambda x: x['source'])
-        
         body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
@@ -121,7 +117,7 @@ def main():
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
     else:
-        print("Geen nieuwe artikelen gevonden.")
+        print("Geen artikelen gevonden.")
 
 if __name__ == "__main__":
     main()
