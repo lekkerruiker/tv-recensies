@@ -40,37 +40,77 @@ def get_nrc():
     return articles
 
 def get_volkskrant():
-    """Volkskrant: Scant ruwe tekst op /televisie/ patronen."""
+    """Volkskrant: Scrape /televisie en /archief voor recensies."""
     articles = []
-    urls = ["https://www.volkskrant.nl/archief/", "https://www.volkskrant.nl/televisie/"]
+    seen_urls = set()
     
-    for url in urls:
+    urls = [
+        "https://www.volkskrant.nl/televisie/",
+        "https://www.volkskrant.nl/archief/"
+    ]
+    
+    for page_url in urls:
         try:
-            res = requests.get(url, headers=HEADERS, timeout=20)
+            print(f"Scraping {page_url}...")
+            res = requests.get(page_url, headers=HEADERS, timeout=20)
             if res.status_code != 200:
+                print(f"  Status {res.status_code}")
                 continue
             
-            # Zoek patronen in de tekst
-            matches = re.findall(r'\/televisie\/[a-zA-Z0-9\-\~]+', res.text)
+            soup = BeautifulSoup(res.text, 'html.parser')
             
-            for match in set(matches):
-                # Haal eventuele JSON escaping weg (de backslash fix)
-                clean_path = match.replace('\\', '')
-                full_url = f"https://www.volkskrant.nl{clean_path}"
+            # Vind alle links op de pagina
+            for link_tag in soup.find_all('a', href=True):
+                href = link_tag['href']
                 
-                # Titel uit de URL slug halen
-                slug = clean_path.split('/')[-1]
-                title_part = slug.split('~')[0]
-                title = title_part.replace('-', ' ').capitalize()
+                # Alleen /televisie/ URLs
+                if '/televisie/' not in href:
+                    continue
                 
-                if len(title) > 10 and "~b" in clean_path:
+                # Maak volledige URL
+                if href.startswith('http'):
+                    full_url = href
+                elif href.startswith('/'):
+                    full_url = f"https://www.volkskrant.nl{href}"
+                else:
+                    continue
+                
+                # Vermijd duplicaten
+                if full_url in seen_urls:
+                    continue
+                
+                # Haal titel uit de link text
+                title = link_tag.get_text(strip=True)
+                
+                # Als de link geen goede titel heeft, probeer uit parent elementen
+                if len(title) < 15 or title.lower() in ['lees meer', 'meer', 'lees verder', '']:
+                    # Zoek in parent voor betere titel
+                    parent = link_tag.find_parent(['article', 'div', 'li'])
+                    if parent:
+                        # Probeer heading te vinden
+                        heading = parent.find(['h1', 'h2', 'h3', 'h4'])
+                        if heading:
+                            title = heading.get_text(strip=True)
+                        else:
+                            # Probeer span of div met titel class
+                            title_elem = parent.find(['span', 'div'], class_=re.compile('title|headline|heading', re.I))
+                            if title_elem:
+                                title = title_elem.get_text(strip=True)
+                
+                # Alleen toevoegen als we een fatsoenlijke titel hebben
+                if len(title) > 15 and full_url not in seen_urls:
                     articles.append({
-                        'title': title, 
-                        'link': full_url, 
+                        'title': title,
+                        'link': full_url,
                         'source': 'Volkskrant'
                     })
-        except:
-            pass
+                    seen_urls.add(full_url)
+                    print(f"  ✓ Gevonden: {title[:60]}")
+                    
+        except Exception as e:
+            print(f"  ❌ Fout bij {page_url}: {e}")
+    
+    print(f"Volkskrant totaal: {len(articles)} artikelen\n")
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
@@ -91,12 +131,28 @@ def get_rss_articles(source, feed_url, path_keyword):
     return articles
 
 def main():
+    print(f"\n{'='*60}")
+    print(f"📺 MEDIA FOCUS SCRAPER")
+    print(f"📅 {datetime.now().strftime('%d-%m-%Y %H:%M')}")
+    print(f"{'='*60}\n")
+    
     all_found = []
     
+    print("Scraping NRC...")
     all_found.extend(get_nrc())
+    print(f"NRC: {len([a for a in all_found if a['source'] == 'NRC'])} artikelen\n")
+    
     all_found.extend(get_volkskrant())
-    all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
-    all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
+    
+    print("Scraping Parool (Han Lips)...")
+    parool_articles = get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/")
+    all_found.extend(parool_articles)
+    print(f"Parool: {len(parool_articles)} artikelen\n")
+    
+    print("Scraping Telegraaf...")
+    telegraaf_articles = get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/")
+    all_found.extend(telegraaf_articles)
+    print(f"Telegraaf: {len(telegraaf_articles)} artikelen\n")
 
     seen = set()
     final_list = []
@@ -104,6 +160,10 @@ def main():
         if art['link'] not in seen:
             final_list.append(art)
             seen.add(art['link'])
+
+    print(f"{'='*60}")
+    print(f"✅ TOTAAL: {len(final_list)} unieke artikelen gevonden")
+    print(f"{'='*60}\n")
 
     if final_list:
         final_list.sort(key=lambda x: x['source'])
@@ -113,16 +173,20 @@ def main():
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
             body += f"<a href='{art['link']}'>Origineel</a> | <a href='{archive_url}'>🔓 Archive.is</a></p>"
         
-        requests.post("https://api.resend.com/emails", 
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={
-                "from": EMAIL_FROM, 
-                "to": [EMAIL_RECEIVER], 
-                "subject": f"Media Focus {datetime.now().strftime('%d-%m')}", 
-                "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
-            })
+        try:
+            response = requests.post("https://api.resend.com/emails", 
+                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "from": EMAIL_FROM, 
+                    "to": [EMAIL_RECEIVER], 
+                    "subject": f"📺 Media Focus {datetime.now().strftime('%d-%m')}", 
+                    "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
+                })
+            print(f"✅ Email verzonden! Status: {response.status_code}\n")
+        except Exception as e:
+            print(f"❌ Email fout: {e}\n")
     else:
-        print("Geen nieuwe artikelen gevonden.")
+        print("⚠️  Geen artikelen gevonden - geen email verzonden.\n")
 
 if __name__ == "__main__":
     main()
