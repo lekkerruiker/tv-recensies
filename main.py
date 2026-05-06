@@ -10,13 +10,12 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-# We gebruiken een zeer uitgebreide header om niet als bot herkend te worden
+# Headers met een 'consent' cookie om de cookiemuur van de Volkskrant te passeren
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'
+    'Accept-Language': 'nl-NL,nl;q=0.9',
+    'Cookie': 'consentUUID=true; p_user_consent=true; distil_muid=true;', 
 }
 
 def get_nrc():
@@ -42,35 +41,40 @@ def get_nrc():
     return articles
 
 def get_volkskrant():
-    """Volkskrant: Scant de archiefpagina met Regex op alles wat naar /televisie/ wijst."""
+    """Volkskrant: Scant de ruwe tekst op alles wat naar /televisie/ wijst."""
     articles = []
-    url = "https://www.volkskrant.nl/archief/"
+    # We gebruiken de archiefpagina (jouw suggestie) en de sectiepagina als backup
+    urls = ["https://www.volkskrant.nl/archief/", "https://www.volkskrant.nl/televisie/"]
     
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=25)
-        # We zoeken in de RUWE tekst (res.text) naar patronen die lijken op: /televisie/...~b.../
-        # Dit vindt links ook in de Javascript/JSON blokken van Next.js
-        found_links = re.findall(r'\"(/televisie/[^\"\s]+~b[^\"\s]+/?)\"', res.text)
-        
-        # Soms zijn links zonder de ~b ID, die pakken we ook mee
-        found_links += re.findall(r'href=\"(/televisie/[^\"\s]+)\"', res.text)
-
-        for link in set(found_links):
-            # Schoon de link op (verwijder eventuele quotes of backslashes van JSON)
-            clean_link = link.replace('\\', '')
-            full_url = f"https://www.volkskrant.nl{clean_link}" if clean_link.startswith('/') else clean_link
+    for url in urls:
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=20)
+            if res.status_code != 200:
+                continue
             
-            # Titel uit de URL halen (betrouwbaarder dan HTML tags bij Next.js)
-            # Voorbeeld: /televisie/hier-staat-de-titel~b12345/
-            parts = clean_link.split('/')
-            slug = parts[-2] if clean_link.endswith('/') else parts[-1]
-            title = slug.split('~')[0].replace('-', ' ').capitalize()
+            # We zoeken naar patronen zoals "/televisie/titel-van-artikel~b12345"
+            # Dit vindt de links ook als ze verstopt zitten in JSON-scripts
+            matches = re.findall(r'\/televisie\/[a-zA-Z0-9\-\~]+', res.text)
             
-            if len(title) > 10:
-                articles.append({'title': title, 'link': full_url, 'source': 'Volkskrant'})
-    except Exception as e:
-        print(f"Volkskrant scan fout: {e}")
-        
+            for match in set(matches):
+                # Maak de link volledig en verwijder eventuele rommel aan het eind
+                full_url = f"https://www.volkskrant.nl{match.split('\\')[0]}"
+                
+                # Haal de titel uit de link-tekst (slug)
+                slug = match.split('/')[-1]
+                title_part = slug.split('~')[0]
+                title = title_part.replace('-', ' ').capitalize()
+                
+                # Alleen toevoegen als het een echt artikel lijkt (met de ~b ID)
+                if len(title) > 10 and "~b" in match:
+                    articles.append({
+                        'title': title, 
+                        'link': full_url, 
+                        'source': 'Volkskrant'
+                    })
+        except:
+            pass
+            
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
@@ -98,6 +102,7 @@ def main():
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
+    # Uniek maken op basis van de link
     seen = set()
     final_list = []
     for art in all_found:
@@ -107,6 +112,7 @@ def main():
 
     if final_list:
         final_list.sort(key=lambda x: x['source'])
+        
         body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
