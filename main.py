@@ -1,6 +1,7 @@
 import os
 import requests
 import feedparser
+import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
@@ -11,7 +12,8 @@ EMAIL_FROM = "onboarding@resend.dev"
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8'
 }
 
 def get_nrc():
@@ -37,44 +39,47 @@ def get_nrc():
     return articles
 
 def get_volkskrant():
-    """Volkskrant: Checkt de voorpagina RSS én de archiefpagina's van vandaag/gisteren."""
+    """Volkskrant: Scant de hoofd-archiefpagina direct op televisie-links."""
     articles = []
-    limit = datetime.now() - timedelta(hours=36)
+    # We gebruiken de door jou voorgestelde URL
+    url = "https://www.volkskrant.nl/archief/"
     
-    # 1. Check Voorpagina RSS
     try:
-        rss_url = "https://www.volkskrant.nl/voorpagina/rss.xml"
-        feed = feedparser.parse(requests.get(rss_url, timeout=15).text)
-        for entry in feed.entries:
+        res = requests.get(url, headers=HEADERS, timeout=20)
+        if res.status_code == 200:
+            # We zoeken met Regex naar ELKE link die /televisie/ bevat
+            # Dit werkt vaak beter bij de Volkskrant dan standaard HTML parsing
+            links = re.findall(r'href="(/televisie/[^"]+~b[^"]+/)"', res.text)
+            
+            for link in set(links): # set() verwijdert direct dubbelen
+                full_url = f"https://www.volkskrant.nl{link}"
+                
+                # We halen de titel uit de URL slug (bijv. 'over-smaak-valt-wel-te-twisten...')
+                # Dit is bij de Volkskrant de meest betrouwbare bron voor de titel
+                slug = link.split('/')[-2]
+                title = slug.split('~')[0].replace('-', ' ').capitalize()
+                
+                if len(title) > 10:
+                    articles.append({
+                        'title': title, 
+                        'link': full_url, 
+                        'source': 'Volkskrant'
+                    })
+    except Exception as e:
+        print(f"Fout bij Volkskrant archief-scan: {e}")
+        
+    # Back-up: Voorpagina RSS (voor de allernieuwste items)
+    try:
+        rss = feedparser.parse(requests.get("https://www.volkskrant.nl/voorpagina/rss.xml", timeout=15).text)
+        for entry in rss.entries:
             if "/televisie/" in entry.link.lower():
                 articles.append({'title': entry.title, 'link': entry.link, 'source': 'Volkskrant'})
     except: pass
-
-    # 2. Check Archiefpagina's (vandaag en gisteren)
-    for i in range(2):
-        date_str = (datetime.now() - timedelta(days=i)).strftime('%Y/%m/%d')
-        archive_url = f"https://www.volkskrant.nl/archief/{date_str}"
-        try:
-            res = requests.get(archive_url, headers=HEADERS, timeout=20)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for a in soup.find_all('a', href=True):
-                link = a['href']
-                if "/televisie/" in link.lower():
-                    full_url = f"https://www.volkskrant.nl{link}" if link.startswith('/') else link
-                    # Probeer een titel te vinden in de tekst of de URL
-                    title = a.get_text().strip()
-                    if not title or len(title) < 10:
-                        # Fallback titel uit de URL halen
-                        title = link.split('/')[-2].replace('-', ' ').capitalize()
-                    
-                    if len(title) > 10:
-                        articles.append({'title': title, 'link': full_url, 'source': 'Volkskrant'})
-        except: continue
-        
+    
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Parool & Telegraaf: Onveranderd met 36 uur filter."""
+    """Parool & Telegraaf: Onveranderd."""
     articles = []
     limit = datetime.now() - timedelta(hours=36)
     try:
@@ -98,7 +103,7 @@ def main():
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
-    # Uniek maken
+    # Uniek maken op basis van de link
     seen = set()
     final_list = []
     for art in all_found:
@@ -107,9 +112,11 @@ def main():
             seen.add(art['link'])
 
     if final_list:
+        # Sorteren op bron voor een nette mail
+        final_list.sort(key=lambda x: x['source'])
+        
         body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
-        # Sorteer op bron
-        for art in sorted(final_list, key=lambda x: x['source']):
+        for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
             body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
             body += f"<a href='{art['link']}'>Origineel</a> | <a href='{archive_url}'>🔓 Archive.is</a></p>"
