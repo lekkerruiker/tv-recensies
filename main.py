@@ -9,19 +9,25 @@ from datetime import datetime, timedelta
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
-VK_GOOGLE_ALERTS_RSS = "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439"
+
+# De twee Google Alert RSS feeds voor de Volkskrant
+VK_FEEDS = [
+    "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", # Televisie algemeen
+    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752"  # Kijkkunde
+]
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 }
 
 def get_nrc():
-    """NRC: Via de website."""
+    """NRC: Via de website (Zap-sectie)."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
         res = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
+        # We kijken naar vandaag en gisteren
         target_dates = [
             datetime.now().strftime('%Y/%m/%d'),
             (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
@@ -36,38 +42,41 @@ def get_nrc():
     except: pass
     return articles
 
-def get_volkskrant_rss():
-    """Volkskrant: Via de Google Alerts RSS feed."""
+def get_volkskrant_via_alerts():
+    """Volkskrant: Combineert meerdere Google Alert RSS feeds."""
     articles = []
-    try:
-        feed = feedparser.parse(VK_GOOGLE_ALERTS_RSS)
-        for entry in feed.entries:
-            # Google Alerts stuurt soms titels met HTML tags (zo as <b>...</b>)
-            title = re.sub('<[^<]+?>', '', entry.title)
-            title = title.replace(" - de Volkskrant", "").strip()
-            
-            # De link in de feed is vaak een Google redirect. 
-            # We proberen de directe link eruit te filteren
-            raw_link = entry.link
-            if "url=" in raw_link:
-                actual_link = raw_link.split("url=")[1].split("&")[0]
-            else:
+    for feed_url in VK_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries:
+                # Verwijder HTML tags uit de titel die Google Alerts soms toevoegt
+                title = re.sub('<[^<]+?>', '', entry.title)
+                title = title.replace(" - de Volkskrant", "").strip()
+                
+                # Link opschonen (Google redirect omzeilen indien mogelijk)
+                raw_link = entry.link
                 actual_link = raw_link
+                if "url=" in raw_link:
+                    # Pak de echte URL die na 'url=' komt
+                    match = re.search(r'url=(https?://[^&]+)', raw_link)
+                    if match:
+                        actual_link = match.group(1)
 
-            # Check of het echt een televisie artikel is
-            if "volkskrant.nl/televisie" in actual_link:
-                articles.append({
-                    'title': title,
-                    'link': actual_link,
-                    'source': 'Volkskrant'
-                })
-    except Exception as e:
-        print(f"Volkskrant RSS fout: {e}")
+                # Alleen toevoegen als het echt naar de Volkskrant wijst
+                if "volkskrant.nl" in actual_link:
+                    articles.append({
+                        'title': title,
+                        'link': actual_link,
+                        'source': 'Volkskrant'
+                    })
+        except Exception as e:
+            print(f"Fout bij verwerken VK feed {feed_url}: {e}")
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Parool & Telegraaf: Via RSS."""
+    """Parool & Telegraaf: Via de standaard RSS feeds."""
     articles = []
+    # We kijken 36 uur terug om zeker te weten dat we de laatste avond meepakken
     limit = datetime.now() - timedelta(hours=36)
     try:
         res = requests.get(feed_url, timeout=20)
@@ -82,22 +91,24 @@ def main():
     print(f"Start Media Focus Scraper op {datetime.now().strftime('%d-%m %H:%M')}")
     all_found = []
 
-    # Haal alle bronnen op
+    # Verzamelen
     all_found.extend(get_nrc())
-    all_found.extend(get_volkskrant_rss())
+    all_found.extend(get_volkskrant_via_alerts())
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
-    # Uniek maken op basis van link
-    seen = set()
+    # Dubbelcheck op unieke links (vooral handig nu we 2 VK feeds hebben)
+    seen_links = set()
     final_list = []
     for art in all_found:
-        if art['link'] not in seen:
+        if art['link'] not in seen_links:
             final_list.append(art)
-            seen.add(art['link'])
+            seen_links.add(art['link'])
 
     if final_list:
+        # Sorteren op bronnaam
         final_list.sort(key=lambda x: x['source'])
+        
         body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
         for art in final_list:
             archive_url = f"https://archive.is/{art['link']}"
@@ -113,7 +124,7 @@ def main():
                 "subject": f"📺 Media Focus {datetime.now().strftime('%d-%m')}", 
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
-        print(f"Resultaat: {len(final_list)} artikelen gevonden. Email verzonden: {response.status_code}")
+        print(f"Klaar! {len(final_list)} artikelen gevonden. Status email: {response.status_code}")
     else:
         print("Geen nieuwe artikelen gevonden.")
 
