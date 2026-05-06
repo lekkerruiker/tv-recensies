@@ -1,6 +1,7 @@
 import os
 import requests
 import feedparser
+import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
@@ -9,23 +10,27 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
+# We gebruiken een zeer uitgebreide header om niet als bot herkend te worden
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache'
 }
 
 def get_nrc():
-    """NRC: Onveranderd (3-daagse check)."""
+    """NRC: Onveranderd."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
         res = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
-        today = datetime.now().strftime('%Y/%m/%d')
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
-        eergisteren = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
-        target_dates = [today, yesterday, eergisteren]
-        
+        target_dates = [
+            datetime.now().strftime('%Y/%m/%d'),
+            (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d'),
+            (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
+        ]
         for a in soup.find_all('a', href=True):
             link = a['href']
             if "/nieuws/" in link and any(d in link for d in target_dates):
@@ -37,33 +42,39 @@ def get_nrc():
     return articles
 
 def get_volkskrant():
-    """Volkskrant: Terug naar de werkende basis-scraper van de sectiepagina."""
+    """Volkskrant: Scant de archiefpagina met Regex op alles wat naar /televisie/ wijst."""
     articles = []
-    # We scannen de directe landingspagina, dit werkte in de eerste versies het beste
-    url = "https://www.volkskrant.nl/televisie/"
+    url = "https://www.volkskrant.nl/archief/"
+    
     try:
-        res = requests.get(url, headers=HEADERS, timeout=20)
-        soup = BeautifulSoup(res.text, 'html.parser')
+        res = requests.get(url, headers=HEADERS, timeout=25)
+        # We zoeken in de RUWE tekst (res.text) naar patronen die lijken op: /televisie/...~b.../
+        # Dit vindt links ook in de Javascript/JSON blokken van Next.js
+        found_links = re.findall(r'\"(/televisie/[^\"\s]+~b[^\"\s]+/?)\"', res.text)
         
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            # Zoek naar de kenmerkende Volkskrant artikel-URL structuur
-            if "/televisie/" in href and "~b" in href:
-                full_url = f"https://www.volkskrant.nl{href}" if href.startswith('/') else href
-                title = a.get_text().strip()
-                
-                # Als er geen tekst is, halen we de titel uit de URL slug
-                if not title or len(title) < 10:
-                    slug = href.split('/')[-2] if href.endswith('/') else href.split('/')[-1]
-                    title = slug.split('~')[0].replace('-', ' ').capitalize()
-                
-                if len(title) > 10:
-                    articles.append({'title': title, 'link': full_url, 'source': 'Volkskrant'})
-    except: pass
+        # Soms zijn links zonder de ~b ID, die pakken we ook mee
+        found_links += re.findall(r'href=\"(/televisie/[^\"\s]+)\"', res.text)
+
+        for link in set(found_links):
+            # Schoon de link op (verwijder eventuele quotes of backslashes van JSON)
+            clean_link = link.replace('\\', '')
+            full_url = f"https://www.volkskrant.nl{clean_link}" if clean_link.startswith('/') else clean_link
+            
+            # Titel uit de URL halen (betrouwbaarder dan HTML tags bij Next.js)
+            # Voorbeeld: /televisie/hier-staat-de-titel~b12345/
+            parts = clean_link.split('/')
+            slug = parts[-2] if clean_link.endswith('/') else parts[-1]
+            title = slug.split('~')[0].replace('-', ' ').capitalize()
+            
+            if len(title) > 10:
+                articles.append({'title': title, 'link': full_url, 'source': 'Volkskrant'})
+    except Exception as e:
+        print(f"Volkskrant scan fout: {e}")
+        
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Parool & Telegraaf: Onveranderd (36 uur check)."""
+    """Parool & Telegraaf: Onveranderd."""
     articles = []
     limit = datetime.now() - timedelta(hours=36)
     try:
@@ -75,7 +86,6 @@ def get_rss_articles(source, feed_url, path_keyword):
                     if pub_date > limit:
                         articles.append({'title': entry.title, 'link': entry.link, 'source': source})
                 except:
-                    # Als de feed geen datum heeft, laten we hem door (veiligheidsmarge)
                     articles.append({'title': entry.title, 'link': entry.link, 'source': source})
     except: pass
     return articles
@@ -83,16 +93,11 @@ def get_rss_articles(source, feed_url, path_keyword):
 def main():
     all_found = []
     
-    # 1. NRC
     all_found.extend(get_nrc())
-    # 2. Volkskrant (Herstelde methode)
     all_found.extend(get_volkskrant())
-    # 3. Parool
     all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
-    # 4. Telegraaf
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
-    # Uniek maken op basis van URL
     seen = set()
     final_list = []
     for art in all_found:
@@ -117,7 +122,7 @@ def main():
                 "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
             })
     else:
-        print("Geen artikelen gevonden.")
+        print("Geen nieuwe artikelen gevonden.")
 
 if __name__ == "__main__":
     main()
