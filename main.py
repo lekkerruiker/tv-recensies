@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
-VK_GOOGLE_ALERTS_RSS = "https://www.google.nl/alerts/feeds/04781440717054478383/4609424762399310514"
+VK_GOOGLE_ALERTS_RSS = "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439"
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
