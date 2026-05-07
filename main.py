@@ -13,7 +13,8 @@ EMAIL_FROM = "onboarding@resend.dev"
 # Feeds voor Volkskrant en Trouw
 VK_FEEDS = [
     "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", # Televisie
-    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752"  # Kijkkunde
+    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752", # Kijkkunde (KOMMA TOEGEVOEGD)
+    "https://www.google.nl/alerts/feeds/04781440717054478383/12023012097167205549"  # Recensies
 ]
 TROUW_FEED = "https://www.google.nl/alerts/feeds/04781440717054478383/9898575911905288324"
 
