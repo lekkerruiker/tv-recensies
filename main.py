@@ -10,11 +10,14 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
+# Gewenste volgorde voor de e-mail
+SOURCE_ORDER = ["Volkskrant", "NRC", "Trouw", "Parool", "Telegraaf"]
+
 # Google Alert RSS feeds
 VK_FEEDS = [
-    "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", # Televisie
-    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752", # Kijkkunde
-    "https://www.google.nl/alerts/feeds/04781440717054478383/12023012097167205549"  # Recensies
+    "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", 
+    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752", 
+    "https://www.google.nl/alerts/feeds/04781440717054478383/12023012097167205549"
 ]
 TROUW_FEED = "https://www.google.nl/alerts/feeds/04781440717054478383/9898575911905288324"
 PAROOL_FEED = "https://www.google.nl/alerts/feeds/04781440717054478383/15811468516558440453"
@@ -23,17 +26,15 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 }
 
+# --- FUNCTIES VOOR DATA OPHALEN ---
+
 def get_nrc():
-    """NRC: Via de website."""
     articles = []
     try:
         url = "https://www.nrc.nl/onderwerp/zap/"
         res = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
-        target_dates = [
-            datetime.now().strftime('%Y/%m/%d'),
-            (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')
-        ]
+        target_dates = [datetime.now().strftime('%Y/%m/%d'), (datetime.now() - timedelta(days=1)).strftime('%Y/%m/%d')]
         for a in soup.find_all('a', href=True):
             link = a['href']
             if "/nieuws/" in link and any(d in link for d in target_dates):
@@ -45,7 +46,6 @@ def get_nrc():
     return articles
 
 def get_volkskrant_via_alerts():
-    """Volkskrant: Filtert op /televisie/."""
     articles = []
     for feed_url in VK_FEEDS:
         try:
@@ -57,14 +57,12 @@ def get_volkskrant_via_alerts():
                 if "url=" in raw_link:
                     match = re.search(r'url=(https?://[^&]+)', raw_link)
                     if match: actual_link = match.group(1)
-
                 if "volkskrant.nl/televisie/" in actual_link.lower():
                     articles.append({'title': title, 'link': actual_link, 'source': 'Volkskrant'})
         except: pass
     return articles
 
 def get_trouw_via_alerts():
-    """Trouw: Filtert op /cultuur-media/."""
     articles = []
     try:
         feed = feedparser.parse(TROUW_FEED)
@@ -75,14 +73,12 @@ def get_trouw_via_alerts():
             if "url=" in raw_link:
                 match = re.search(r'url=(https?://[^&]+)', raw_link)
                 if match: actual_link = match.group(1)
-
             if "trouw.nl/cultuur-media/" in actual_link.lower():
                 articles.append({'title': title, 'link': actual_link, 'source': 'Trouw'})
     except: pass
     return articles
 
 def get_parool_via_alerts():
-    """Parool: Filtert op /han-lips/."""
     articles = []
     try:
         feed = feedparser.parse(PAROOL_FEED)
@@ -93,15 +89,12 @@ def get_parool_via_alerts():
             if "url=" in raw_link:
                 match = re.search(r'url=(https?://[^&]+)', raw_link)
                 if match: actual_link = match.group(1)
-
-            # Strikte filter voor Han Lips
             if "parool.nl/han-lips/" in actual_link.lower():
                 articles.append({'title': title, 'link': actual_link, 'source': 'Parool'})
     except: pass
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Telegraaf (en andere overgebleven RSS bronnen)."""
     articles = []
     try:
         res = requests.get(feed_url, timeout=20)
@@ -112,15 +105,17 @@ def get_rss_articles(source, feed_url, path_keyword):
     except: pass
     return articles
 
+# --- MAIN LOGIC ---
+
 def main():
     print(f"Start Media Focus Scraper op {datetime.now().strftime('%d-%m %H:%M')}")
     all_found = []
 
     # Verzamelen
-    all_found.extend(get_nrc())
     all_found.extend(get_volkskrant_via_alerts())
+    all_found.extend(get_nrc())
     all_found.extend(get_trouw_via_alerts())
-    all_found.extend(get_parool_via_alerts()) # Nu via Google Alerts!
+    all_found.extend(get_parool_via_alerts())
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
     # Uniek maken
@@ -132,14 +127,35 @@ def main():
             seen_links.add(art['link'])
 
     if final_list:
-        final_list.sort(key=lambda x: x['source'])
+        # --- SORTEREN OP JOUW VOLGORDE ---
+        # We maken een dictionary van de volgorde: {"Volkskrant": 0, "NRC": 1, ...}
+        order_map = {name: i for i, name in enumerate(SOURCE_ORDER)}
+        # Sorteer op basis van de index in SOURCE_ORDER. Onbekende bronnen komen onderaan (99).
+        final_list.sort(key=lambda x: order_map.get(x['source'], 99))
         
-        body = "<h2>⭐ Media Focus: Update (Laatste 36 uur)</h2>"
+        # --- EMAIL BODY BOUWEN ---
+        body = "<div style='font-family: Arial, sans-serif; max-width: 600px;'>"
+        body += "<h2 style='color: #333;'>⭐ Media Focus Update</h2>"
+        body += f"<p style='color: #666;'>Gevonden artikelen in de laatste 36 uur ({datetime.now().strftime('%d-%m')})</p>"
+        body += "<hr style='border: 0; border-top: 1px solid #eee;'>"
+
+        current_source = ""
         for art in final_list:
+            # Voeg een kopje toe als de bron verandert
+            if art['source'] != current_source:
+                current_source = art['source']
+                body += f"<h3 style='background-color: #f8f9fa; padding: 5px 10px; border-left: 4px solid #333; margin-top: 25px;'>{current_source}</h3>"
+            
             archive_url = f"https://archive.is/{art['link']}"
-            body += f"<p><strong>[{art['source']}]</strong> {art['title']}<br>"
-            body += f"<a href='{art['link']}'>Origineel</a> | <a href='{archive_url}'>🔓 Archive.is</a></p>"
+            body += f"<div style='margin-bottom: 15px; padding-left: 10px;'>"
+            body += f"<div style='font-weight: bold; font-size: 16px; margin-bottom: 5px;'>{art['title']}</div>"
+            body += f"<a href='{art['link']}' style='color: #007bff; text-decoration: none;'>Origineel</a> | "
+            body += f"<a href='{archive_url}' style='color: #28a745; text-decoration: none;'>🔓 Archive.is</a>"
+            body += "</div>"
         
+        body += "</div>"
+
+        # Verzenden via Resend
         response = requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
@@ -147,9 +163,9 @@ def main():
                 "from": EMAIL_FROM, 
                 "to": [EMAIL_RECEIVER], 
                 "subject": f"📺 Media Focus {datetime.now().strftime('%d-%m')}", 
-                "html": f"<html><body style='font-family:sans-serif;'>{body}</body></html>"
+                "html": body
             })
-        print(f"Klaar! {len(final_list)} artikelen gevonden. Status email: {response.status_code}")
+        print(f"Klaar! {len(final_list)} artikelen verzonden. Status: {response.status_code}")
     else:
         print("Geen nieuwe artikelen gevonden.")
 
