@@ -10,13 +10,14 @@ API_KEY = os.getenv("RESEND_API_KEY")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 EMAIL_FROM = "onboarding@resend.dev"
 
-# Feeds voor Volkskrant en Trouw
+# Google Alert RSS feeds
 VK_FEEDS = [
     "https://www.google.nl/alerts/feeds/04781440717054478383/4321423776390191439", # Televisie
-    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752", # Kijkkunde (KOMMA TOEGEVOEGD)
+    "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752", # Kijkkunde
     "https://www.google.nl/alerts/feeds/04781440717054478383/12023012097167205549"  # Recensies
 ]
 TROUW_FEED = "https://www.google.nl/alerts/feeds/04781440717054478383/9898575911905288324"
+PAROOL_FEED = "https://www.google.nl/alerts/feeds/04781440717054478383/15811468516558440453"
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -44,7 +45,7 @@ def get_nrc():
     return articles
 
 def get_volkskrant_via_alerts():
-    """Volkskrant: Filtert streng op /televisie/."""
+    """Volkskrant: Filtert op /televisie/."""
     articles = []
     for feed_url in VK_FEEDS:
         try:
@@ -63,37 +64,45 @@ def get_volkskrant_via_alerts():
     return articles
 
 def get_trouw_via_alerts():
-    """Trouw: Filtert streng op /cultuur-media/."""
+    """Trouw: Filtert op /cultuur-media/."""
     articles = []
     try:
         feed = feedparser.parse(TROUW_FEED)
         for entry in feed.entries:
-            # Titel opschonen (Google rommel en sitenaam verwijderen)
             title = re.sub('<[^<]+?>', '', entry.title).replace(" - Trouw", "").strip()
-            
-            # Echte link uit Google redirect vissen
             raw_link = entry.link
             actual_link = raw_link
             if "url=" in raw_link:
                 match = re.search(r'url=(https?://[^&]+)', raw_link)
-                if match:
-                    actual_link = match.group(1)
+                if match: actual_link = match.group(1)
 
-            # STRIKTE FILTER voor Trouw
             if "trouw.nl/cultuur-media/" in actual_link.lower():
-                articles.append({
-                    'title': title,
-                    'link': actual_link,
-                    'source': 'Trouw'
-                })
-    except Exception as e:
-        print(f"Fout bij Trouw feed: {e}")
+                articles.append({'title': title, 'link': actual_link, 'source': 'Trouw'})
+    except: pass
+    return articles
+
+def get_parool_via_alerts():
+    """Parool: Filtert op /han-lips/."""
+    articles = []
+    try:
+        feed = feedparser.parse(PAROOL_FEED)
+        for entry in feed.entries:
+            title = re.sub('<[^<]+?>', '', entry.title).replace(" - Het Parool", "").strip()
+            raw_link = entry.link
+            actual_link = raw_link
+            if "url=" in raw_link:
+                match = re.search(r'url=(https?://[^&]+)', raw_link)
+                if match: actual_link = match.group(1)
+
+            # Strikte filter voor Han Lips
+            if "parool.nl/han-lips/" in actual_link.lower():
+                articles.append({'title': title, 'link': actual_link, 'source': 'Parool'})
+    except: pass
     return articles
 
 def get_rss_articles(source, feed_url, path_keyword):
-    """Parool & Telegraaf: Via RSS."""
+    """Telegraaf (en andere overgebleven RSS bronnen)."""
     articles = []
-    limit = datetime.now() - timedelta(hours=36)
     try:
         res = requests.get(feed_url, timeout=20)
         feed = feedparser.parse(res.text)
@@ -107,14 +116,14 @@ def main():
     print(f"Start Media Focus Scraper op {datetime.now().strftime('%d-%m %H:%M')}")
     all_found = []
 
-    # Verzamelen van alle bronnen
+    # Verzamelen
     all_found.extend(get_nrc())
     all_found.extend(get_volkskrant_via_alerts())
-    all_found.extend(get_trouw_via_alerts()) # Nieuwe bron toegevoegd
-    all_found.extend(get_rss_articles("Parool", "https://www.parool.nl/rss.xml", "/han-lips/"))
+    all_found.extend(get_trouw_via_alerts())
+    all_found.extend(get_parool_via_alerts()) # Nu via Google Alerts!
     all_found.extend(get_rss_articles("Telegraaf", "https://www.telegraaf.nl/entertainment/rss", "/entertainment/media/"))
 
-    # Uniek maken op basis van link
+    # Uniek maken
     seen_links = set()
     final_list = []
     for art in all_found:
