@@ -1,26 +1,50 @@
 name: Daily Media Mail
+
 on:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *' # Elke ochtend om 06:00 UTC
   workflow_dispatch:
+
 jobs:
   send-mail:
     runs-on: ubuntu-latest
+    # Cruciaal: geef de actie schrijfrechten om de JSON-file te updaten
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: pip install requests beautifulsoup4 feedparser playwright
+
       - name: Install Playwright Chromium
         run: |
           playwright install chromium
           playwright install-deps chromium
+
       - name: Run scraper
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: python main.py
+
+      - name: Commit en Push seen_links.json
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Voeg het bestand toe als het bestaat
+          if [ -f seen_links.json ]; then
+            git add seen_links.json
+            # Alleen committen als er wijzigingen zijn
+            git diff --quiet && git diff --staged --quiet || (git commit -m "Update seen_links.json [skip ci]" && git push)
+          else
+            echo "seen_links.json niet gevonden, niets te committen."
+          fi
