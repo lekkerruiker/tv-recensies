@@ -2,7 +2,7 @@ name: Daily Media Mail
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Elke ochtend om 08:00 UTC (10:00 Nederlandse zomertijd)
+    - cron: '5 8 * * *' # Elke ochtend om 08:05 UTC (10:05 Nederlandse zomertijd)
   workflow_dispatch:
 
 jobs:
