@@ -1,8 +1,10 @@
 name: Daily Media Mail
 
 on:
+  push:
+    branches: [ "main" ]
   schedule:
-    - cron: '5 8 * * *' # Elke ochtend om 08:05 UTC (10:05 Nederlandse zomertijd)
+    - cron: '10 8 * * *'
   workflow_dispatch:
 
 jobs:
