@@ -21,7 +21,7 @@ SOURCES = {
             "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752",
             "https://www.google.nl/alerts/feeds/04781440717054478383/12023012097167205549",
         ],
-        "path_keywords": ["volkskrant.nl/televisie/", "volkskrant.nl/nieuwe-series/", "volkskrant.nl/kijkverder/",]
+        "path_keywords": ["volkskrant.nl/televisie/", "volkskrant.nl/nieuwe-series/", "volkskrant.nl/kijkverder/"],
         "title_suffix": " - de Volkskrant",
     },
     "Trouw": {
