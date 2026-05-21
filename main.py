@@ -21,7 +21,7 @@ SOURCES = {
             "https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752",
             "https://www.google.nl/alerts/feeds/04781440717054478383/12023012097167205549",
         ],
-        "path_keyword": "volkskrant.nl/televisie/",
+        "path_keywords": ["volkskrant.nl/televisie/", "volkskrant.nl/nieuwe-serie/"],
         "title_suffix": " - de Volkskrant",
     },
     "Trouw": {
@@ -86,7 +86,9 @@ def save_seen_links(seen: set) -> None:
 # SCRAPERS
 # ---------------------------------------------------------------------------
 
-def get_via_alerts(source: str, feeds: list, path_keyword: str, title_suffix: str) -> list:
+def get_via_alerts(source: str, feeds: list, title_suffix: str,
+                   path_keyword: str = None, path_keywords: list = None) -> list:
+    keywords = path_keywords if path_keywords else [path_keyword]
     articles = []
     for feed_url in feeds:
         try:
@@ -97,10 +99,10 @@ def get_via_alerts(source: str, feeds: list, path_keyword: str, title_suffix: st
             for entry in feed.entries:
                 title = re.sub("<[^<]+?>", "", entry.title).replace(title_suffix, "").strip()
                 link = extract_url(entry.link)
-                if path_keyword in link.lower():
+                if any(kw in link.lower() for kw in keywords):
                     articles.append({"title": title, "link": link, "source": source})
                     matched += 1
-            print(f"[{source}] Feed ...{feed_url[-30:]} → {raw_count} entries, {matched} matchen op '{path_keyword}'")
+            print(f"[{source}] Feed ...{feed_url[-30:]} → {raw_count} entries, {matched} matchen op {keywords}")
         except Exception as e:
             print(f"[FOUT] {source} feed mislukt (...{feed_url[-30:]}): {e}")
     return articles
