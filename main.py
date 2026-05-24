@@ -192,6 +192,28 @@ def send_email(articles: list) -> bool:
     return res.status_code in [200, 201]
 
 
+def send_no_news_email() -> None:
+    body = "<div style='font-family: Arial, sans-serif; max-width: 600px;'>"
+    body += "<h2>⭐ Media Focus Update</h2>"
+    body += f"<p>Geen nieuwe artikelen gevonden op {datetime.now().strftime('%d-%m-%Y')}.</p>"
+    body += "</div>"
+
+    res = requests.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": EMAIL_FROM,
+            "to": [EMAIL_RECEIVER],
+            "subject": f"📺 Media Focus {datetime.now().strftime('%d-%m')} — geen nieuws",
+            "html": body,
+        },
+    )
+    print(f"[RESEND] Status: {res.status_code} | Response: {res.text}")
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -228,7 +250,8 @@ def main():
     print(f"[TOTAAL] {len(new_articles)} nieuw na historiefilter.")
 
     if not new_articles:
-        print("\n[RESULTAAT] Geen nieuwe artikelen — mail wordt niet verstuurd.")
+        print("\n[RESULTAAT] Geen nieuwe artikelen — lege mail wordt verstuurd.")
+        send_no_news_email()
         return
 
     # --- Sorteren ---
