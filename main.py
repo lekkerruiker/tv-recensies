@@ -25,7 +25,7 @@ SOURCES = {
     },
     "Volkskrant Kijkkunde": {
         "feeds": ["https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752"],
-        "path_keywords": ["volkskrant.nl/cultuur-media/"],
+        "path_keywords": ["volkskrant.nl/"],
         "title_suffix": " - de Volkskrant",
     },
     "Trouw": {
