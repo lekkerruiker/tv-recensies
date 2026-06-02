@@ -25,7 +25,7 @@ SOURCES = {
     },
     "Volkskrant Kijkkunde": {
         "feeds": ["https://www.google.nl/alerts/feeds/04781440717054478383/11932785620654586752"],
-        "path_keywords": ["volkskrant.nl/"],
+        "path_keywords": ["volkskrant.nl"],
         "title_suffix": " - de Volkskrant",
     },
     "Trouw": {
@@ -48,7 +48,6 @@ HEADERS = {
     )
 }
 
-
 # ---------------------------------------------------------------------------
 # HULPFUNCTIES
 # ---------------------------------------------------------------------------
@@ -59,7 +58,6 @@ def extract_url(raw_link: str) -> str:
         if match:
             return match.group(1)
     return raw_link
-
 
 def load_seen_links() -> set:
     if not os.path.exists(SEEN_LINKS_FILE):
@@ -75,7 +73,6 @@ def load_seen_links() -> set:
         print(f"[WAARSCHUWING] Kon {SEEN_LINKS_FILE} niet laden: {e}")
         return set()
 
-
 def save_seen_links(seen: set) -> None:
     limited = list(seen)[-500:]
     try:
@@ -84,7 +81,6 @@ def save_seen_links(seen: set) -> None:
         print(f"[GEHEUGEN] {len(limited)} links opgeslagen in {SEEN_LINKS_FILE}.")
     except Exception as e:
         print(f"[WAARSCHUWING] Kon {SEEN_LINKS_FILE} niet opslaan: {e}")
-
 
 # ---------------------------------------------------------------------------
 # SCRAPERS
@@ -109,7 +105,6 @@ def get_via_alerts(source: str, feeds: list, path_keywords: list, title_suffix: 
             print(f"[FOUT] {source} feed mislukt (...{feed_url[-30:]}): {e}")
     return articles
 
-
 def get_nrc() -> list:
     articles = []
     try:
@@ -130,7 +125,6 @@ def get_nrc() -> list:
         print(f"[FOUT] NRC scraper mislukt: {e}")
     return articles
 
-
 def get_telegraaf() -> list:
     articles = []
     try:
@@ -147,7 +141,6 @@ def get_telegraaf() -> list:
     except Exception as e:
         print(f"[FOUT] Telegraaf RSS mislukt: {e}")
     return articles
-
 
 # ---------------------------------------------------------------------------
 # E-MAIL
@@ -175,7 +168,6 @@ def build_email_html(articles: list) -> str:
     body += "</div>"
     return body
 
-
 def send_email(articles: list) -> bool:
     res = requests.post(
         "https://api.resend.com/emails",
@@ -192,7 +184,6 @@ def send_email(articles: list) -> bool:
     )
     print(f"[RESEND] Status: {res.status_code} | Response: {res.text}")
     return res.status_code in [200, 201]
-
 
 def send_no_news_email() -> None:
     body = "<div style='font-family: Arial, sans-serif; max-width: 600px;'>"
@@ -214,7 +205,6 @@ def send_no_news_email() -> None:
         },
     )
     print(f"[RESEND] Status: {res.status_code} | Response: {res.text}")
-
 
 # ---------------------------------------------------------------------------
 # MAIN
@@ -268,7 +258,6 @@ def main():
         save_seen_links(history)
     else:
         print("[RESULTAAT] ❌ Versturen mislukt — seen_links NIET bijgewerkt.")
-
 
 if __name__ == "__main__":
     main()
