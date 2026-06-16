@@ -107,22 +107,31 @@ def get_via_alerts(source: str, feeds: list, path_keywords: list, title_suffix: 
 
 def get_nrc() -> list:
     articles = []
-    try:
-        res = requests.get("https://www.nrc.nl/onderwerp/zap/", headers=HEADERS, timeout=20)
-        print(f"[NRC] Pagina opgehaald (status {res.status_code}, {len(res.text)} bytes)")
-        soup = BeautifulSoup(res.text, "html.parser")
-        all_links = soup.find_all("a", href=True)
-        nieuws_links = [a for a in all_links if "/nieuws/" in a["href"]]
-        print(f"[NRC] {len(all_links)} links gevonden, {len(nieuws_links)} met /nieuws/")
-        for a in nieuws_links:
-            link = a["href"]
-            full_url = f"https://www.nrc.nl{link}" if link.startswith("/") else link
-            title = a.get_text().strip()
-            if len(title) > 15:
-                articles.append({"title": title, "link": full_url, "source": "NRC"})
-        print(f"[NRC] {len(articles)} artikelen na titelfilter (>15 tekens)")
-    except Exception as e:
-        print(f"[FOUT] NRC scraper mislukt: {e}")
+    nrc_urls = [
+        "https://www.nrc.nl/onderwerp/zap/",
+        "https://www.nrc.nl/onderwerp/series/"
+    ]
+    
+    for url in nrc_urls:
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=20)
+            page_name = url.split("/")[-2]  # Geeft 'zap' of 'series' voor de log
+            print(f"[NRC] Pagina '{page_name}' opgehaald (status {res.status_code}, {len(res.text)} bytes)")
+            soup = BeautifulSoup(res.text, "html.parser")
+            all_links = soup.find_all("a", href=True)
+            nieuws_links = [a for a in all_links if "/nieuws/" in a["href"]]
+            print(f"[NRC] {len(all_links)} links gevonden op '{page_name}', {len(nieuws_links)} met /nieuws/")
+            
+            for a in nieuws_links:
+                link = a["href"]
+                full_url = f"https://www.nrc.nl{link}" if link.startswith("/") else link
+                title = a.get_text().strip()
+                if len(title) > 15:
+                    articles.append({"title": title, "link": full_url, "source": "NRC"})
+        except Exception as e:
+            print(f"[FOUT] NRC scraper mislukt voor {url}: {e}")
+            
+    print(f"[NRC] {len(articles)} artikelen in totaal verzameld na titelfilter (>15 tekens)")
     return articles
 
 def get_telegraaf() -> list:
